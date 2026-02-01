@@ -1,4 +1,4 @@
-This repository contains ai-app (v0.1.0).
+This repository contains ai-app-02-apple-notes-rag (v0.1.0).
 Python requirement: >= 3.12.
 
 Mission for coding agents
