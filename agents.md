@@ -9,6 +9,7 @@ Maintain backward compatibility unless explicitly told to break it.
 Add/update tests for behavior changes.
 Keep code typed, linted, and formatted.
 Never commit secrets. Use .env + .env.example.
+Ask for git check-in after every checkpoint.
 Quick start
 Environment
 Python: 3.12+
