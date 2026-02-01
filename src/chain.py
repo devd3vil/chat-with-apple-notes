@@ -53,15 +53,6 @@ class RAGChain:
             # Step 1: Retrieve relevant chunks
             citations = self.retriever.retrieve(query, top_k=self.top_k)
             
-            if not citations:
-                # No chunks found - return confidence 0
-                return QAResult(
-                    query=query,
-                    answer="I could not find any relevant information to answer this question.",
-                    citations=[],
-                    confidence=0.0,
-                )
-            
             # Step 2: Build prompt
             prompt = self._build_prompt(query, citations)
             
@@ -101,6 +92,7 @@ class RAGChain:
         )
         
         prompt = f"""Answer the following question based only on the provided snippets.
+If no snippets are provided, say you could not find relevant information.
 Cite your sources using [1], [2], etc. Only cite snippets that are actually used in your answer.
 
 Snippets:
@@ -217,7 +209,7 @@ class Chunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
     
-    def chunk_text(self, text: str, note_id: str) -> list:
+    def chunk_text(self, text: str, note_id: str) -> list["Chunk"]:
         """
         Split text into overlapping chunks.
         
@@ -237,6 +229,9 @@ class Chunker:
         
         chunk_idx = 0
         start_char = 0
+        step = self.chunk_size - self.chunk_overlap
+        if step <= 0:
+            step = self.chunk_size
         
         while start_char < len(text):
             # Calculate end position
@@ -258,12 +253,12 @@ class Chunker:
             
             chunks.append(chunk)
             
-            # Move to next chunk with overlap
-            start_char = end_char - self.chunk_overlap
-            
-            # Prevent infinite loop on very short overlap
-            if start_char >= len(text):
+            # Stop if we've reached the end of the text
+            if end_char >= len(text):
                 break
+            
+            # Move to next chunk with overlap
+            start_char += step
             
             chunk_idx += 1
         

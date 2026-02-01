@@ -1,0 +1,42 @@
+[
+  {
+    "id": "n1",
+    "title": "Travel Plans",
+    "body": "Paris trip in May. Book flights and hotel.",
+    "folder": "Notes/Personal",
+    "created_at": "2024-01-15T10:30:00",
+    "modified_at": "2024-01-15T10:30:00"
+  },
+  {
+    "id": "n2",
+    "title": "Meeting Notes",
+    "body": "Discussed Q1 OKRs and hiring roadmap.",
+    "folder": "Notes/Work",
+    "created_at": "2024-01-15T10:30:00",
+    "modified_at": "2024-01-15T10:30:00"
+  },
+  {
+    "id": "n3",
+    "title": "Recipe",
+    "body": "Pasta: boil water, add salt, cook for 9 minutes.",
+    "folder": "Notes/Home",
+    "created_at": "2024-01-15T10:30:00",
+    "modified_at": "2024-01-15T10:30:00"
+  },
+  {
+    "id": "n4",
+    "title": "Reading List",
+    "body": "Read Deep Work and The Pragmatic Programmer.",
+    "folder": "Notes/Personal",
+    "created_at": "2024-01-15T10:30:00",
+    "modified_at": "2024-01-15T10:30:00"
+  },
+  {
+    "id": "n5",
+    "title": "Workout Plan",
+    "body": "Monday: upper body. Wednesday: cardio. Friday: legs.",
+    "folder": "Notes/Health",
+    "created_at": "2024-01-15T10:30:00",
+    "modified_at": "2024-01-15T10:30:00"
+  }
+]

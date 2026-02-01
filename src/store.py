@@ -77,7 +77,7 @@ class InMemoryStore(VectorStore):
     Suitable for testing and small datasets.
     """
     
-    def __init__(self, embedder: Embedder):
+    def __init__(self, embedder: Embedder | None = None):
         """
         Initialize in-memory store.
         

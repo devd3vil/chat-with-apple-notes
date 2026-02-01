@@ -1,0 +1,22 @@
+[
+  {
+    "query": "What should I do for my Paris trip?",
+    "expected_chunks": ["n1_0"]
+  },
+  {
+    "query": "What was discussed about hiring?",
+    "expected_chunks": ["n2_0"]
+  },
+  {
+    "query": "How long should pasta cook?",
+    "expected_chunks": ["n3_0"]
+  },
+  {
+    "query": "Which books are on my reading list?",
+    "expected_chunks": ["n4_0"]
+  },
+  {
+    "query": "What is the workout schedule?",
+    "expected_chunks": ["n5_0"]
+  }
+]

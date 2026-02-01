@@ -72,11 +72,29 @@ export_notes_interactive()
 pytest -v
 ```
 
+### 6. Start the API
+
+```bash
+uvicorn main:app --reload
+```
+
+### 7. Query the API
+
+```bash
+curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" \
+  -d '{"export_dir": "/path/to/exported_notes"}'
+
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+  -d '{"query": "What are the key points from my notes?"}'
+```
+
 ## Usage
 
 ### Python API
 
 ```python
+from pathlib import Path
+
 from src.config import Settings
 from src.sync import incremental_sync
 from src.embedder import OllamaEmbedder
@@ -89,15 +107,20 @@ from src.llm import OllamaLLM
 config = Settings()
 
 # Sync notes
-sync_state = incremental_sync(
-    notes_dir="path/to/exported_notes",
-    state_file="data/sync_state.json"
+changed_notes, removed_note_ids = incremental_sync(
+    export_dir=Path("path/to/exported_notes")
 )
 
 # Setup RAG chain
-embedder = OllamaEmbedder(config=config)
-store = ChromaStore(config=config)
-llm = OllamaLLM(config=config)
+embedder = OllamaEmbedder(
+    model_name=config.ollama_embedding_model,
+    base_url=config.ollama_base_url,
+)
+store = ChromaStore(db_path=config.chroma_db_path, embedder=embedder)
+llm = OllamaLLM(
+    model_name=config.ollama_chat_model,
+    base_url=config.ollama_base_url,
+)
 retriever = Retriever(store=store, embedder=embedder)
 chain = RAGChain(retriever=retriever, llm=llm)
 
@@ -124,7 +147,13 @@ print(f"Confidence: {result.confidence}")
 │   ├── store.py                    # Vector store (InMemory + Chroma)
 │   ├── retriever.py                # Retrieval logic
 │   ├── llm.py                      # LLM interface (Ollama + Fake)
-│   └── chain.py                    # RAG chain orchestration
+│   ├── chain.py                    # RAG chain orchestration
+│   └── api.py                      # FastAPI endpoints
+├── evals/
+│   ├── dataset.json                # Eval dataset
+│   ├── fixture_notes.json          # Fixture corpus
+│   └── eval.py                     # Recall@k evaluation
+├── main.py                         # FastAPI entrypoint
 ├── tests/
 │   ├── test_models.py
 │   ├── test_config.py
@@ -133,7 +162,8 @@ print(f"Confidence: {result.confidence}")
 │   ├── test_store.py
 │   ├── test_retriever.py
 │   ├── test_llm.py
-│   └── test_chain.py
+│   ├── test_chain.py
+│   └── test_api.py
 ├── data/
 │   ├── sync_state.json             # Sync state (git-ignored)
 │   └── chroma_db/                  # Vector database (git-ignored)
@@ -169,6 +199,18 @@ ruff check src/ tests/
 
 # Type check
 mypy src/
+```
+
+### Evaluation
+
+```bash
+python evals/eval.py
+```
+
+For real embeddings, run Ollama and pass:
+
+```bash
+python evals/eval.py --use-ollama --use-chroma
 ```
 
 ### Test Strategy
@@ -223,7 +265,7 @@ CHUNK_SIZE=512                                  # Characters per chunk
 CHUNK_OVERLAP=50                                # Overlap between chunks
 TOP_K=5                                         # Chunks to retrieve per query
 
-# API Configuration (for future FastAPI)
+# API Configuration
 API_HOST=0.0.0.0
 API_PORT=8000
 API_RELOAD=False

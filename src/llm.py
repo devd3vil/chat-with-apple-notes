@@ -130,8 +130,7 @@ class FakeLLM(LLM):
             response_template: Template for responses. If empty, uses default.
         """
         self.response_template = response_template or (
-            "Based on the provided snippets, the answer is: [1][2][3]. "
-            "The key information is drawn from the retrieved documents."
+            "I could not find any relevant information to answer this question."
         )
         self._healthy = True
     

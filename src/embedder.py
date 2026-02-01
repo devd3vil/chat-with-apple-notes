@@ -155,13 +155,16 @@ class FakeEmbedder(Embedder):
     Deterministic: same text always produces same embedding.
     """
     
-    def __init__(self, embedding_dim: int = 384):
+    def __init__(self, embedding_dim: int = 384, dimension: int | None = None):
         """
         Initialize fake embedder.
         
         Args:
             embedding_dim: Dimensionality of output vectors.
+            dimension: Backward-compatible alias for embedding_dim.
         """
+        if dimension is not None:
+            embedding_dim = dimension
         self.embedding_dim = embedding_dim
         self._healthy = True
     
