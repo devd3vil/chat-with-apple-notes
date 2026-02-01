@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     
     # Notes export
     notes_export_dir: Optional[Path] = None
+    auto_ingest_on_startup: bool = False
     
     model_config = SettingsConfigDict(
         env_file=".env",

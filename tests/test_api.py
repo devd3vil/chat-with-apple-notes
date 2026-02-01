@@ -24,10 +24,15 @@ def _write_note(export_dir: Path, date: str, title: str, note_id: str, body: str
     (export_dir / filename).write_text(html, encoding="utf-8")
 
 
-def _make_client(tmp_path: Path, llm: FakeLLM | None = None) -> TestClient:
-    settings = Settings(chroma_db_path=tmp_path / "chroma_db")
+def _make_client(
+    tmp_path: Path,
+    llm: FakeLLM | None = None,
+    settings: Settings | None = None,
+    store: InMemoryStore | None = None,
+) -> TestClient:
+    settings = settings or Settings(chroma_db_path=tmp_path / "chroma_db")
     embedder = FakeEmbedder(dimension=3)
-    store = InMemoryStore()
+    store = store or InMemoryStore()
     llm = llm or FakeLLM()
     chunker = Chunker(chunk_size=20, chunk_overlap=5)
     sync_state = SyncState(state_file=tmp_path / "sync_state.json")
@@ -84,6 +89,24 @@ def test_ask_returns_answer(tmp_path: Path) -> None:
     assert payload["query"] == "What is the answer?"
 
 
+def test_search_returns_results(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    _write_note(export_dir, "20240115", "Note One", "p1", "Hello world")
+
+    client = _make_client(tmp_path)
+    ingest = client.post("/ingest", json={"export_dir": str(export_dir)})
+    assert ingest.status_code == 200
+
+    response = client.post("/search", json={"query": "Hello world", "top_k": 3})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["query"] == "Hello world"
+    assert payload["top_k"] == 3
+    assert len(payload["results"]) >= 1
+    assert payload["results"][0]["chunk_id"].startswith("p1_")
+
+
 def test_health_endpoint(tmp_path: Path) -> None:
     client = _make_client(tmp_path)
     response = client.get("/health")
@@ -94,3 +117,20 @@ def test_health_endpoint(tmp_path: Path) -> None:
     assert isinstance(payload["embedder"], bool)
     assert isinstance(payload["llm"], bool)
     assert isinstance(payload["store"], bool)
+
+
+def test_auto_ingest_on_startup(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    _write_note(export_dir, "20240115", "Note One", "p1", "Hello world")
+
+    settings = Settings(
+        chroma_db_path=tmp_path / "chroma_db",
+        notes_export_dir=export_dir,
+        auto_ingest_on_startup=True,
+    )
+    store = InMemoryStore()
+    client = _make_client(tmp_path, settings=settings, store=store)
+
+    with client:
+        assert store.size() > 0

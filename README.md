@@ -78,6 +78,9 @@ pytest -v
 uvicorn main:app --reload
 ```
 
+If `NOTES_EXPORT_DIR` is set and `AUTO_INGEST_ON_STARTUP=true`, the app will
+ingest notes and update the Chroma DB on startup.
+
 ### 7. Query the API
 
 ```bash
@@ -275,6 +278,7 @@ DEBUG=False
 
 # Notes Export
 NOTES_EXPORT_DIR=                               # Optional: path to exported notes
+AUTO_INGEST_ON_STARTUP=false                    # Set true to ingest on app start
 ```
 
 ## FAQ
