@@ -1,0 +1,22 @@
+[
+  {"note_id": "g1", "title": "Travel Plans", "body": "Paris trip in May. Book flights and hotel.", "query": "Paris trip in May. Book flights and hotel.", "expected_chunk_id": "g1_0"},
+  {"note_id": "g2", "title": "Meeting Notes", "body": "Discussed Q1 OKRs and hiring roadmap.", "query": "Discussed Q1 OKRs and hiring roadmap.", "expected_chunk_id": "g2_0"},
+  {"note_id": "g3", "title": "Recipe", "body": "Pasta: boil water, add salt, cook for 9 minutes.", "query": "Pasta: boil water, add salt, cook for 9 minutes.", "expected_chunk_id": "g3_0"},
+  {"note_id": "g4", "title": "Reading List", "body": "Read Deep Work and The Pragmatic Programmer.", "query": "Read Deep Work and The Pragmatic Programmer.", "expected_chunk_id": "g4_0"},
+  {"note_id": "g5", "title": "Workout Plan", "body": "Monday: upper body. Wednesday: cardio. Friday: legs.", "query": "Monday: upper body. Wednesday: cardio. Friday: legs.", "expected_chunk_id": "g5_0"},
+  {"note_id": "g6", "title": "Grocery List", "body": "Buy eggs, milk, spinach, and sourdough bread.", "query": "Buy eggs, milk, spinach, and sourdough bread.", "expected_chunk_id": "g6_0"},
+  {"note_id": "g7", "title": "Project Milestones", "body": "Alpha by March, beta by April, launch in June.", "query": "Alpha by March, beta by April, launch in June.", "expected_chunk_id": "g7_0"},
+  {"note_id": "g8", "title": "Book Summary", "body": "Atomic Habits emphasizes small changes that compound.", "query": "Atomic Habits emphasizes small changes that compound.", "expected_chunk_id": "g8_0"},
+  {"note_id": "g9", "title": "Client Feedback", "body": "Client asked for faster onboarding and clearer docs.", "query": "Client asked for faster onboarding and clearer docs.", "expected_chunk_id": "g9_0"},
+  {"note_id": "g10", "title": "Tech Stack", "body": "Backend in FastAPI, frontend in React, DB in Postgres.", "query": "Backend in FastAPI, frontend in React, DB in Postgres.", "expected_chunk_id": "g10_0"},
+  {"note_id": "g11", "title": "Onboarding", "body": "First week: read docs, set up repo, shadow demos.", "query": "First week: read docs, set up repo, shadow demos.", "expected_chunk_id": "g11_0"},
+  {"note_id": "g12", "title": "App Ideas", "body": "Build a habit tracker with streaks and reminders.", "query": "Build a habit tracker with streaks and reminders.", "expected_chunk_id": "g12_0"},
+  {"note_id": "g13", "title": "Vacation Packing", "body": "Pack charger, passport, travel adapter, and sunscreen.", "query": "Pack charger, passport, travel adapter, and sunscreen.", "expected_chunk_id": "g13_0"},
+  {"note_id": "g14", "title": "Performance Review", "body": "Exceeded goals, improved system latency by 30 percent.", "query": "Exceeded goals, improved system latency by 30 percent.", "expected_chunk_id": "g14_0"},
+  {"note_id": "g15", "title": "Interview Questions", "body": "Ask about scaling challenges and team collaboration.", "query": "Ask about scaling challenges and team collaboration.", "expected_chunk_id": "g15_0"},
+  {"note_id": "g16", "title": "Conference Notes", "body": "Keynote: AI agents need strong tool reliability.", "query": "Keynote: AI agents need strong tool reliability.", "expected_chunk_id": "g16_0"},
+  {"note_id": "g17", "title": "Budget", "body": "Allocate 40 percent to marketing, 30 to product.", "query": "Allocate 40 percent to marketing, 30 to product.", "expected_chunk_id": "g17_0"},
+  {"note_id": "g18", "title": "Mentorship", "body": "Monthly 1:1s, focus on career goals and feedback.", "query": "Monthly 1:1s, focus on career goals and feedback.", "expected_chunk_id": "g18_0"},
+  {"note_id": "g19", "title": "Design Principles", "body": "Prefer clarity, reduce cognitive load, use whitespace.", "query": "Prefer clarity, reduce cognitive load, use whitespace.", "expected_chunk_id": "g19_0"},
+  {"note_id": "g20", "title": "Travel Logistics", "body": "Train to Berlin at 9 AM, hotel check-in at 3 PM.", "query": "Train to Berlin at 9 AM, hotel check-in at 3 PM.", "expected_chunk_id": "g20_0"}
+]
