@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 50
     top_k: int = 5
     min_similarity_score: float = 0.8
+    bm25_index_path: Path = Path("data/bm25_index.json")
     
     # API configuration
     api_host: str = "0.0.0.0"

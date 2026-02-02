@@ -3,7 +3,7 @@ FastAPI application for Apple Notes RAG.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -16,7 +16,8 @@ from src.embedder import Embedder, OllamaEmbedder
 from src.llm import LLM, OllamaLLM
 from src.models import QAResult
 from src.notes_exporter import extract_text_from_html
-from src.retriever import Retriever
+from src.retriever import HybridRetriever, Retriever
+from src.bm25 import BM25Index
 from src.store import ChromaStore, VectorStore
 from src.sync import SyncState, incremental_sync
 
@@ -80,14 +81,19 @@ def _run_ingest(
     store: VectorStore,
     chunker: Chunker,
     sync_state: SyncState,
+    bm25: BM25Index | None = None,
 ) -> dict:
     changed_notes, removed_note_ids = incremental_sync(export_dir, sync_state)
 
     for note_id in removed_note_ids:
         store.delete_note(note_id)
+        if bm25:
+            bm25.remove_note(note_id)
 
     total_chunks = 0
     for note in changed_notes:
+        if bm25:
+            bm25.remove_note(note.id)
         text = extract_text_from_html(note.body)
         chunks = chunker.chunk_text(text, note.id)
         for chunk in chunks:
@@ -95,6 +101,11 @@ def _run_ingest(
         if chunks:
             store.add_chunks(chunks)
             total_chunks += len(chunks)
+            if bm25:
+                bm25.add_documents(chunks)
+
+    if bm25:
+        bm25.save()
 
     return {
         "changed_notes": len(changed_notes),
@@ -108,10 +119,11 @@ def create_app(
     embedder: Optional[Embedder] = None,
     store: Optional[VectorStore] = None,
     llm: Optional[LLM] = None,
-    retriever: Optional[Retriever] = None,
+    retriever: Optional[Union[Retriever, HybridRetriever]] = None,
     chain: Optional[RAGChain] = None,
     chunker: Optional[Chunker] = None,
     sync_state: Optional[SyncState] = None,
+    bm25_index: Optional[BM25Index] = None,
 ) -> FastAPI:
     """Create and configure the FastAPI app."""
     settings = settings or Settings()
@@ -125,7 +137,14 @@ def create_app(
         model_name=settings.ollama_chat_model,
         base_url=settings.ollama_base_url,
     )
-    retriever = retriever or Retriever(store=store, embedder=embedder)
+    bm25 = None
+    if bm25_index is None:
+        bm25 = BM25Index(settings.bm25_index_path)
+        bm25.load()
+    else:
+        bm25 = bm25_index
+
+    retriever = retriever or HybridRetriever(store=store, embedder=embedder, bm25=bm25)
     chain = chain or RAGChain(
         retriever=retriever,
         llm=llm,
@@ -147,6 +166,7 @@ def create_app(
     app.state.chain = chain
     app.state.chunker = chunker
     app.state.sync_state = sync_state
+    app.state.bm25 = bm25
 
     @app.exception_handler(StarletteHTTPException)
     def http_exception_handler(
@@ -183,6 +203,7 @@ def create_app(
             store=store,
             chunker=chunker,
             sync_state=sync_state,
+            bm25=bm25,
         )
 
     @app.post("/ingest")
@@ -197,6 +218,8 @@ def create_app(
                 store.reset_collection()
             else:
                 store.clear()
+            if bm25:
+                bm25.reset()
             sync_state.note_metadata = {}
             sync_state.last_sync_time = None
             sync_state.save()
@@ -207,6 +230,7 @@ def create_app(
             store=store,
             chunker=chunker,
             sync_state=sync_state,
+            bm25=bm25,
         )
 
     @app.post("/ask", response_model=QAResult)

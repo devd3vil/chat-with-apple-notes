@@ -7,7 +7,7 @@ A local-first Q&A application for your Apple Notes using Retrieval Augmented Gen
 ✅ **Local-First**: All processing happens locally - no cloud APIs or external services  
 ✅ **Apple Notes Integration**: Export and sync notes directly from Apple Notes app  
 ✅ **RAG Q&A**: Answer questions about your notes with citations  
-✅ **Vector Search**: Semantic search using embeddings (Ollama)  
+✅ **Hybrid Search**: Semantic + lexical (BM25) retrieval  
 ✅ **Incremental Sync**: Only process changed notes for efficiency  
 ✅ **Deterministic Testing**: Built with reproducible, testable fake implementations
 
@@ -243,7 +243,9 @@ Apple Notes → Export → Parse HTML → Sync State
     ↓
 Split into Chunks → Embed (Ollama) → Vector Store (Chroma)
     ↓
-Query → Retrieve (top-k) → Build Prompt → LLM (Ollama)
+Tokenize → BM25 Index
+    ↓
+Query → Hybrid Retrieve (BM25 + Vector) → Build Prompt → LLM (Ollama)
     ↓
 Parse Citations → QAResult (answer, citations, confidence)
 ```
@@ -276,6 +278,7 @@ CHUNK_SIZE=512                                  # Characters per chunk
 CHUNK_OVERLAP=50                                # Overlap between chunks
 TOP_K=5                                         # Chunks to retrieve per query
 MIN_SIMILARITY_SCORE=0.8                        # Minimum similarity for snippets
+BM25_INDEX_PATH=data/bm25_index.json            # BM25 index persistence
 
 # API Configuration
 API_HOST=0.0.0.0

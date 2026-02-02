@@ -25,6 +25,7 @@ class TestSettingsDefaults:
         assert settings.chunk_overlap == 50
         assert settings.top_k == 5
         assert settings.min_similarity_score == 0.8
+        assert settings.bm25_index_path == Path("data/bm25_index.json")
     
     def test_default_api_settings(self):
         """Test default API configuration."""

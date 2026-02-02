@@ -6,7 +6,9 @@ Tests basic retrieval with mocked embedder and store.
 
 import pytest
 from unittest.mock import Mock
-from src.retriever import Retriever
+from src.retriever import Retriever, HybridRetriever
+from src.bm25 import BM25Index
+from src.models import Chunk
 from src.models import Citation
 
 
@@ -157,3 +159,36 @@ class TestRetriever:
         assert results[0].score == 0.99
         assert results[1].score == 0.50
         assert results[2].score == 0.01
+
+
+def test_hybrid_retriever_rrf_prefers_lexical_match(tmp_path):
+    """Hybrid retriever should fuse BM25 + vector with RRF."""
+    embedder = Mock()
+    embedder.embed.return_value = [0.1, 0.2]
+
+    store = Mock()
+    store.search.return_value = [
+        ("chunk2", "Colorado Springs Pikes Peak", 0.9),
+        ("chunk1", "Estes Park Riverwalk", 0.8),
+    ]
+
+    bm25 = BM25Index(tmp_path / "bm25.json")
+    bm25.add_documents(
+        [
+            Chunk(
+                id="chunk1",
+                note_id="n1",
+                text="Estes Park Riverwalk",
+                chunk_idx=0,
+                start_char=0,
+                end_char=20,
+                embedding=None,
+            ),
+        ]
+    )
+
+    retriever = HybridRetriever(store=store, embedder=embedder, bm25=bm25)
+    results = retriever.retrieve("Estes Park", top_k=1)
+
+    assert results
+    assert results[0].chunk_id == "chunk1"

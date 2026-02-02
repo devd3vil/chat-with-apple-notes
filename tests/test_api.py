@@ -30,7 +30,10 @@ def _make_client(
     settings: Settings | None = None,
     store: InMemoryStore | None = None,
 ) -> TestClient:
-    settings = settings or Settings(chroma_db_path=tmp_path / "chroma_db")
+    settings = settings or Settings(
+        chroma_db_path=tmp_path / "chroma_db",
+        bm25_index_path=tmp_path / "bm25_index.json",
+    )
     embedder = FakeEmbedder(dimension=3)
     store = store or InMemoryStore()
     llm = llm or FakeLLM()
