@@ -5,6 +5,7 @@ Fast, focused tests for the RAG pipeline.
 """
 
 import pytest
+from unittest.mock import Mock
 from src.chain import RAGChain, Chunker
 from src.models import Citation, Chunk
 from src.store import InMemoryStore
@@ -61,13 +62,24 @@ class TestRAGChain:
         store = InMemoryStore()
         llm = FakeLLM()
         
+        chunk = Chunk(
+            id="note1_0",
+            note_id="note1",
+            text="The answer is 42",
+            chunk_idx=0,
+            start_char=0,
+            end_char=15,
+            embedding=embedder.embed("The answer is 42"),
+        )
+        store.add_chunks([chunk])
+        
         retriever = Retriever(store=store, embedder=embedder)
         chain = RAGChain(retriever=retriever, llm=llm)
         
-        llm.set_response("The answer is 42")
-        result = chain.ask("What is the answer?")
+        llm.set_response("The answer is 42 [1]")
+        result = chain.ask("The answer is 42")
         
-        assert result.query == "What is the answer?"
+        assert result.query == "The answer is 42"
         assert "42" in result.answer
         assert 0.0 <= result.confidence <= 1.0
     
@@ -96,6 +108,31 @@ class TestRAGChain:
         
         assert result.citations == []
         assert result.confidence == 0.0
+        assert "could not find" in result.answer.lower()
+
+    def test_min_score_filters_irrelevant_chunks(self):
+        """Chunks below min_score should not be used."""
+        embedder = FakeEmbedder(dimension=3)
+        store = InMemoryStore()
+        llm = FakeLLM()
+
+        chunk = Chunk(
+            id="note1_0",
+            note_id="note1",
+            text="Unrelated snippet",
+            chunk_idx=0,
+            start_char=0,
+            end_char=17,
+            embedding=[0.0, 0.0, 0.0],
+        )
+        store.add_chunks([chunk])
+
+        retriever = Retriever(store=store, embedder=embedder)
+        chain = RAGChain(retriever=retriever, llm=llm, min_score=0.8)
+
+        result = chain.ask("Completely different query")
+
+        assert result.citations == []
         assert "could not find" in result.answer.lower()
     
     def test_build_prompt_includes_citations(self):
@@ -187,3 +224,52 @@ class TestRAGChain:
         result = chain.ask("Query")
         
         assert 0.0 <= result.confidence <= 1.0
+
+    def test_fallback_answer_when_llm_omits_citations(self):
+        """Fallback should surface snippets when LLM omits citations."""
+        embedder = FakeEmbedder(dimension=3)
+        store = InMemoryStore()
+        llm = FakeLLM()
+        llm.set_response("Answer without citations.")
+        
+        chunk = Chunk(
+            id="note1_0",
+            note_id="note1",
+            text="Estes Riverwalk is scenic.",
+            chunk_idx=0,
+            start_char=0,
+            end_char=27,
+            embedding=embedder.embed("Estes Riverwalk is scenic."),
+        )
+        store.add_chunks([chunk])
+        
+        retriever = Retriever(store=store, embedder=embedder)
+        chain = RAGChain(retriever=retriever, llm=llm)
+        
+        result = chain.ask("Estes Riverwalk is scenic.")
+        
+        assert result.citations
+        assert "[1]" in result.answer
+
+    def test_ask_calls_retriever_and_llm_with_top_k(self):
+        """ask() should retrieve top-k and pass snippets into the prompt."""
+        retriever = Mock()
+        llm = Mock()
+        citations = [
+            Citation(chunk_id="c1", text="Snippet one", score=0.92),
+            Citation(chunk_id="c2", text="Snippet two", score=0.88),
+        ]
+        retriever.retrieve.return_value = citations
+        llm.generate.return_value = "Answer [1]"
+
+        chain = RAGChain(retriever=retriever, llm=llm, top_k=5, min_score=0.8)
+
+        result = chain.ask("What is in my notes?")
+
+        retriever.retrieve.assert_called_once_with("What is in my notes?", top_k=5)
+        assert llm.generate.called
+        prompt_arg = llm.generate.call_args[0][0]
+        assert "Snippet one" in prompt_arg
+        assert "Snippet two" in prompt_arg
+        assert "What is in my notes?" in prompt_arg
+        assert result.citations

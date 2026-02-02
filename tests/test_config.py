@@ -24,6 +24,7 @@ class TestSettingsDefaults:
         assert settings.chunk_size == 512
         assert settings.chunk_overlap == 50
         assert settings.top_k == 5
+        assert settings.min_similarity_score == 0.8
     
     def test_default_api_settings(self):
         """Test default API configuration."""
@@ -46,12 +47,14 @@ class TestSettingsEnvironmentVars:
         monkeypatch.setenv("OLLAMA_BASE_URL", "http://custom-ollama:11434")
         monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "custom-embed")
         monkeypatch.setenv("TOP_K", "10")
+        monkeypatch.setenv("MIN_SIMILARITY_SCORE", "0.75")
         monkeypatch.setenv("DEBUG", "True")
         
         settings = Settings(_env_file=None)
         assert settings.ollama_base_url == "http://custom-ollama:11434"
         assert settings.ollama_embedding_model == "custom-embed"
         assert settings.top_k == 10
+        assert settings.min_similarity_score == 0.75
         assert settings.debug is True
     
     def test_case_insensitive_env_vars(self, monkeypatch):

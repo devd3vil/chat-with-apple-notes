@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     chunk_size: int = 512
     chunk_overlap: int = 50
     top_k: int = 5
+    min_similarity_score: float = 0.8
     
     # API configuration
     api_host: str = "0.0.0.0"

@@ -28,6 +28,10 @@ class IngestRequest(BaseModel):
         default=None,
         description="Directory containing exported Apple Notes HTML files.",
     )
+    reindex: bool = Field(
+        default=False,
+        description="If true, clears the store and reindexes all notes.",
+    )
 
 
 class AskRequest(BaseModel):
@@ -122,7 +126,12 @@ def create_app(
         base_url=settings.ollama_base_url,
     )
     retriever = retriever or Retriever(store=store, embedder=embedder)
-    chain = chain or RAGChain(retriever=retriever, llm=llm, top_k=settings.top_k)
+    chain = chain or RAGChain(
+        retriever=retriever,
+        llm=llm,
+        top_k=settings.top_k,
+        min_score=settings.min_similarity_score,
+    )
     chunker = chunker or Chunker(
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
@@ -182,6 +191,15 @@ def create_app(
 
         if not export_dir.exists() or not export_dir.is_dir():
             raise HTTPException(status_code=400, detail="export_dir must be a directory")
+
+        if request.reindex:
+            if isinstance(store, ChromaStore):
+                store.reset_collection()
+            else:
+                store.clear()
+            sync_state.note_metadata = {}
+            sync_state.last_sync_time = None
+            sync_state.save()
 
         return _run_ingest(
             export_dir=export_dir,

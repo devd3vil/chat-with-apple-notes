@@ -216,6 +216,14 @@ For real embeddings, run Ollama and pass:
 python evals/eval.py --use-ollama --use-chroma
 ```
 
+If you change embedding models, reindex the vector store (collection dimensions are fixed):
+
+```bash
+curl -X POST http://localhost:8001/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"export_dir": "/path/to/exported_notes", "reindex": true}'
+```
+
 ### Test Strategy
 
 All tests use **deterministic fake implementations**:
@@ -267,6 +275,7 @@ CHROMA_DB_PATH=data/chroma_db                   # Persistent vector DB
 CHUNK_SIZE=512                                  # Characters per chunk
 CHUNK_OVERLAP=50                                # Overlap between chunks
 TOP_K=5                                         # Chunks to retrieve per query
+MIN_SIMILARITY_SCORE=0.8                        # Minimum similarity for snippets
 
 # API Configuration
 API_HOST=0.0.0.0

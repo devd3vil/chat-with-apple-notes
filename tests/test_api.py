@@ -51,7 +51,7 @@ def _make_client(
 def test_ingest_and_stats(tmp_path: Path) -> None:
     export_dir = tmp_path / "export"
     export_dir.mkdir()
-    _write_note(export_dir, "20240115", "Note One", "p1", "Hello world")
+    _write_note(export_dir, "20240115", "Note One", "p1", "The answer is 42")
     _write_note(export_dir, "20240116", "Note Two", "p2", "Second note text")
 
     client = _make_client(tmp_path)
@@ -82,11 +82,11 @@ def test_ask_returns_answer(tmp_path: Path) -> None:
     ingest = client.post("/ingest", json={"export_dir": str(export_dir)})
     assert ingest.status_code == 200
 
-    response = client.post("/ask", json={"query": "What is the answer?"})
+    response = client.post("/ask", json={"query": "The answer is 42"})
     assert response.status_code == 200
     payload = response.json()
     assert "42" in payload["answer"]
-    assert payload["query"] == "What is the answer?"
+    assert payload["query"] == "The answer is 42"
 
 
 def test_search_returns_results(tmp_path: Path) -> None:
@@ -134,3 +134,24 @@ def test_auto_ingest_on_startup(tmp_path: Path) -> None:
 
     with client:
         assert store.size() > 0
+
+
+def test_reindex_clears_store(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    _write_note(export_dir, "20240115", "Note One", "p1", "Hello world")
+
+    store = InMemoryStore()
+    client = _make_client(tmp_path, store=store)
+
+    ingest = client.post("/ingest", json={"export_dir": str(export_dir)})
+    assert ingest.status_code == 200
+    assert store.size() > 0
+
+    # Remove files and reindex to clear store
+    for html_file in export_dir.glob("*.html"):
+        html_file.unlink()
+
+    reindex = client.post("/ingest", json={"export_dir": str(export_dir), "reindex": True})
+    assert reindex.status_code == 200
+    assert store.size() == 0

@@ -13,7 +13,13 @@ from src.llm import LLM
 class RAGChain:
     """RAG chain that retrieves and generates answers with citations."""
     
-    def __init__(self, retriever: Retriever, llm: LLM, top_k: int = 5):
+    def __init__(
+        self,
+        retriever: Retriever,
+        llm: LLM,
+        top_k: int = 5,
+        min_score: float = 0.8,
+    ):
         """
         Initialize RAG chain.
         
@@ -25,6 +31,7 @@ class RAGChain:
         self.retriever = retriever
         self.llm = llm
         self.top_k = top_k
+        self.min_score = min_score
     
     def ask(self, query: str) -> QAResult:
         """
@@ -52,6 +59,15 @@ class RAGChain:
         try:
             # Step 1: Retrieve relevant chunks
             citations = self.retriever.retrieve(query, top_k=self.top_k)
+            citations = [c for c in citations if c.score >= self.min_score]
+
+            if not citations:
+                return QAResult(
+                    query=query,
+                    answer="I could not find any relevant information to answer this question.",
+                    citations=[],
+                    confidence=0.0,
+                )
             
             # Step 2: Build prompt
             prompt = self._build_prompt(query, citations)
@@ -61,6 +77,9 @@ class RAGChain:
             
             # Step 4: Extract citations from answer
             extracted_citations = self._extract_citations(answer, citations)
+            if citations and not extracted_citations:
+                answer = self._fallback_answer(citations)
+                extracted_citations = citations[: min(3, len(citations))]
             
             # Step 5: Calculate confidence
             confidence = self._calculate_confidence(answer, citations)
@@ -91,9 +110,10 @@ class RAGChain:
             for i, citation in enumerate(citations)
         )
         
-        prompt = f"""Answer the following question based only on the provided snippets.
-If no snippets are provided, say you could not find relevant information.
-Cite your sources using [1], [2], etc. Only cite snippets that are actually used in your answer.
+        prompt = f"""You are a Q&A bot for a user's Apple Notes. Use only the provided snippets.
+Only answer if the snippets are relevant to the question. If not, say you could not find relevant information in the notes.
+Cite your sources using [1], [2], etc. Cite only snippets you used.
+Be concise, clear, and directly address the question.
 
 Snippets:
 {snippets_text}
@@ -193,6 +213,22 @@ Answer:"""
         
         # Clamp to [0, 1]
         return max(0.0, min(1.0, confidence))
+
+    def _fallback_answer(self, citations: list[Citation]) -> str:
+        """
+        Build a fallback answer when the model fails to cite.
+        
+        Args:
+            citations: Retrieved citations to surface.
+        
+        Returns:
+            A minimal extractive answer with citations.
+        """
+        lines = []
+        for idx, citation in enumerate(citations[:3], start=1):
+            lines.append(f"[{idx}] {citation.text}")
+        snippets = "\n".join(lines)
+        return f"Most relevant snippets:\n{snippets}"
 
 
 class Chunker:

@@ -185,8 +185,9 @@ class ChromaStore(VectorStore):
         self.client = chromadb.PersistentClient(path=str(db_path))
         
         # Get or create collection
+        self._collection_name = "notes"
         self.collection = self.client.get_or_create_collection(
-            name="notes",
+            name=self._collection_name,
             metadata={"hnsw:space": "cosine"},
         )
     
@@ -214,12 +215,18 @@ class ChromaStore(VectorStore):
                 "end_char": str(chunk.end_char),
             })
         
-        self.collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-        )
+        try:
+            self.collection.upsert(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
+        except Exception as e:
+            raise ValueError(
+                "Failed to upsert embeddings into Chroma. "
+                "If you changed embedding models, reindex to recreate the collection."
+            ) from e
     
     def search(
         self,
@@ -283,6 +290,17 @@ class ChromaStore(VectorStore):
                 self.collection.delete(ids=all_ids)
         except Exception as e:
             print(f"Error clearing collection: {e}")
+
+    def reset_collection(self) -> None:
+        """Drop and recreate the collection (needed after embedding dim changes)."""
+        try:
+            self.client.delete_collection(self._collection_name)
+        except Exception:
+            pass
+        self.collection = self.client.get_or_create_collection(
+            name=self._collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
     
     def size(self) -> int:
         """Get number of chunks in collection."""
