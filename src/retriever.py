@@ -84,9 +84,9 @@ class HybridRetriever:
         store: VectorStore,
         embedder: Embedder,
         bm25: BM25Index,
-        k_rrf: int = 60,
+        k_rrf: int = 10,
         w_vec: float = 1.0,
-        w_lex: float = 1.0,
+        w_lex: float = 2.0,
     ):
         self.store = store
         self.embedder = embedder
