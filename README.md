@@ -42,8 +42,8 @@ cp .env.example .env
 
 # Edit .env if needed (defaults work for local Ollama)
 # OLLAMA_BASE_URL=http://localhost:11434
-# OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-# OLLAMA_CHAT_MODEL=neural-chat
+# OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
+# OLLAMA_CHAT_MODEL=llama3.1:8b
 ```
 
 ### 3. Start Ollama
@@ -53,8 +53,8 @@ cp .env.example .env
 ollama serve
 
 # Pull models (in another terminal)
-ollama pull nomic-embed-text
-ollama pull neural-chat
+ollama pull mxbai-embed-large
+ollama pull llama3.1:8b
 ```
 
 ### 4. Export Apple Notes
@@ -89,6 +89,9 @@ curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" \
 
 curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
   -d '{"query": "What are the key points from my notes?"}'
+
+curl -X POST http://localhost:8000/search -H "Content-Type: application/json" \
+  -d '{"query": "Estes Park", "top_k": 5}'
 ```
 
 ## Usage
@@ -102,9 +105,10 @@ from src.config import Settings
 from src.sync import incremental_sync
 from src.embedder import OllamaEmbedder
 from src.store import ChromaStore
-from src.retriever import Retriever
+from src.retriever import HybridRetriever
 from src.chain import RAGChain
 from src.llm import OllamaLLM
+from src.bm25 import BM25Index
 
 # Load config
 config = Settings()
@@ -114,7 +118,7 @@ changed_notes, removed_note_ids = incremental_sync(
     export_dir=Path("path/to/exported_notes")
 )
 
-# Setup RAG chain
+# Setup RAG chain + hybrid retrieval
 embedder = OllamaEmbedder(
     model_name=config.ollama_embedding_model,
     base_url=config.ollama_base_url,
@@ -124,7 +128,9 @@ llm = OllamaLLM(
     model_name=config.ollama_chat_model,
     base_url=config.ollama_base_url,
 )
-retriever = Retriever(store=store, embedder=embedder)
+bm25 = BM25Index(config.bm25_index_path)
+bm25.load()
+retriever = HybridRetriever(store=store, embedder=embedder, bm25=bm25)
 chain = RAGChain(retriever=retriever, llm=llm)
 
 # Ask questions
@@ -216,6 +222,12 @@ For real embeddings, run Ollama and pass:
 python evals/eval.py --use-ollama --use-chroma
 ```
 
+LLM-as-judge evaluation (uses your Ollama chat model):
+
+```bash
+python evals/judge_eval.py --use-ollama --output evals/results.jsonl
+```
+
 If you change embedding models, reindex the vector store (collection dimensions are fixed):
 
 ```bash
@@ -256,7 +268,8 @@ Parse Citations → QAResult (answer, citations, confidence)
 | --------------- | ------------------------- | ---------------------------------------------------- |
 | **Embedder**    | Convert text to vectors   | OllamaEmbedder, FakeEmbedder                         |
 | **VectorStore** | Store & search embeddings | ChromaStore, InMemoryStore                           |
-| **Retriever**   | Semantic search wrapper   | Single class (wraps Embedder + Store)                |
+| **Retriever**   | Hybrid search wrapper     | HybridRetriever (BM25 + Vector, RRF fusion)          |
+| **BM25Index**   | Lexical index             | BM25Index (rank-bm25)                                |
 | **LLM**         | Text generation           | OllamaLLM, FakeLLM                                   |
 | **RAGChain**    | Orchestrates Q&A pipeline | retrieve → build prompt → generate → parse citations |
 
@@ -267,8 +280,8 @@ Create `.env` from `.env.example`:
 ```dotenv
 # Ollama Configuration
 OLLAMA_BASE_URL=http://localhost:11434          # Ollama server
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text         # Embedding model
-OLLAMA_CHAT_MODEL=neural-chat                   # Chat/generation model
+OLLAMA_EMBEDDING_MODEL=mxbai-embed-large        # Embedding model
+OLLAMA_CHAT_MODEL=llama3.1:8b                   # Chat/generation model
 
 # Vector Store Configuration
 CHROMA_DB_PATH=data/chroma_db                   # Persistent vector DB

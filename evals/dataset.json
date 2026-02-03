@@ -1,22 +1,122 @@
 [
   {
     "query": "What should I do for my Paris trip?",
-    "expected_chunks": ["n1_0"]
+    "expected_chunks": [
+      "n1_0"
+    ]
   },
   {
     "query": "What was discussed about hiring?",
-    "expected_chunks": ["n2_0"]
+    "expected_chunks": [
+      "n2_0"
+    ]
   },
   {
     "query": "How long should pasta cook?",
-    "expected_chunks": ["n3_0"]
+    "expected_chunks": [
+      "n3_0"
+    ]
   },
   {
     "query": "Which books are on my reading list?",
-    "expected_chunks": ["n4_0"]
+    "expected_chunks": [
+      "n4_0"
+    ]
   },
   {
     "query": "What is the workout schedule?",
-    "expected_chunks": ["n5_0"]
+    "expected_chunks": [
+      "n5_0"
+    ]
+  },
+  {
+    "query": "What time do we land at DEN on Tuesday?",
+    "expected_chunks": [
+      "n6_0"
+    ]
+  },
+  {
+    "query": "Where are the Big-Thompson Canyon turn-outs mentioned?",
+    "expected_chunks": [
+      "n6_1"
+    ]
+  },
+  {
+    "query": "Where should we walk along the Estes Riverwalk?",
+    "expected_chunks": [
+      "n6_1"
+    ]
+  },
+  {
+    "query": "Where is the Stanley Hotel overlook mentioned?",
+    "expected_chunks": [
+      "n6_2"
+    ]
+  },
+  {
+    "query": "Which short lake loop is photogenic in RMNP?",
+    "expected_chunks": [
+      "n6_2"
+    ]
+  },
+  {
+    "query": "Where is the Royal Gorge Bridge mentioned?",
+    "expected_chunks": [
+      "n6_3"
+    ]
+  },
+  {
+    "query": "Which dinner spot is suggested in Canon City?",
+    "expected_chunks": [
+      "n6_3"
+    ]
+  },
+  {
+    "query": "Where should we have lunch at Thai Mint?",
+    "expected_chunks": [
+      "n6_4"
+    ]
+  },
+  {
+    "query": "Which sunrise walk is suggested at Garden of the Gods?",
+    "expected_chunks": [
+      "n6_4"
+    ]
+  },
+  {
+    "query": "What is the Pikes Peak Summit option?",
+    "expected_chunks": [
+      "n6_5"
+    ]
+  },
+  {
+    "query": "Where do we stroll in Old Colorado City for blue hour?",
+    "expected_chunks": [
+      "n6_5"
+    ]
+  },
+  {
+    "query": "What time is the Georgetown Loop RR ride?",
+    "expected_chunks": [
+      "n6_6"
+    ]
+  },
+  {
+    "query": "Which overlook is optional on the way to Vail?",
+    "expected_chunks": [
+      "n6_6"
+    ]
+  },
+  {
+    "query": "What trail is suggested after check-in at Vail?",
+    "expected_chunks": [
+      "n6_7"
+    ]
+  },
+  {
+    "query": "Where can we grab quick bites or coffee on Sunday morning?",
+    "expected_chunks": [
+      "n6_9"
+    ]
   }
 ]

@@ -13,7 +13,8 @@ from typing import Any
 from src.chain import Chunker
 from src.embedder import FakeEmbedder, OllamaEmbedder
 from src.models import Note
-from src.retriever import Retriever
+from src.retriever import HybridRetriever, Retriever
+from src.bm25 import BM25Index
 from src.store import ChromaStore, InMemoryStore, VectorStore
 
 
@@ -67,6 +68,7 @@ def main() -> None:
     parser.add_argument("--ollama-base-url", default="http://localhost:11434")
     parser.add_argument("--ollama-embedding-model", default="nomic-embed-text")
     parser.add_argument("--use-chroma", action="store_true")
+    parser.add_argument("--hybrid", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -86,7 +88,14 @@ def main() -> None:
 
     chunker = Chunker(chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap)
     store = _build_store(notes, chunker, embedder, use_chroma=args.use_chroma)
-    retriever = Retriever(store=store, embedder=embedder)
+    if args.hybrid:
+        bm25 = BM25Index(Path("data/bm25_eval_index.json"))
+        for note in notes:
+            chunks = chunker.chunk_text(note.body, note.id)
+            bm25.add_documents(chunks)
+        retriever = HybridRetriever(store=store, embedder=embedder, bm25=bm25)
+    else:
+        retriever = Retriever(store=store, embedder=embedder)
 
     totals = {1: 0, 3: 0, 5: 0}
     results = []
