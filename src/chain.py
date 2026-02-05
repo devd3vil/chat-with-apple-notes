@@ -58,7 +58,10 @@ class RAGChain:
         
         try:
             # Step 1: Retrieve relevant chunks
-            citations = self.retriever.retrieve(query, top_k=self.top_k)
+            if hasattr(self.retriever, "retrieve_for_generation"):
+                citations = self.retriever.retrieve_for_generation(query, top_k=self.top_k)
+            else:
+                citations = self.retriever.retrieve(query, top_k=self.top_k)
             citations = [c for c in citations if c.score >= self.min_score]
 
             if not citations:

@@ -144,7 +144,20 @@ def create_app(
     else:
         bm25 = bm25_index
 
-    retriever = retriever or HybridRetriever(store=store, embedder=embedder, bm25=bm25)
+    retriever = retriever or HybridRetriever(
+        store=store,
+        embedder=embedder,
+        bm25=bm25,
+        rerank_enabled=settings.rerank_enabled,
+        hybrid_topn=settings.hybrid_topn,
+        rerank_candidates_n=settings.rerank_candidates_n,
+        final_context_k=settings.final_context_k,
+        max_context_tokens=settings.max_context_tokens,
+        rerank_cache_ttl_seconds=settings.rerank_cache_ttl_seconds,
+        constraint_mode=settings.constraint_mode,
+        time_query_require_time_evidence=settings.time_query_require_time_evidence,
+        rerank_llm=llm,
+    )
     chain = chain or RAGChain(
         retriever=retriever,
         llm=llm,
