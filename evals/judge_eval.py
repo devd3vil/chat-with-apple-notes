@@ -61,8 +61,8 @@ def _judge_prompt(query: str, reference: str, answer: str) -> str:
     return (
         "You are an evaluator for a Q&A system over notes.\n"
         "Compare the model answer to the reference answer.\n"
-        "Be moderately strict: return pass only if the answer covers the key facts from the reference without adding unsupported details.\n"
-        "Omissions of key facts should reduce score and may cause fail. Any hallucinated detail should cause fail.\n\n"
+        "Be mildly lenient: return pass if the answer includes the core facts from the reference and does not contradict them.\n"
+        "Minor extra descriptors are acceptable if they don't change the meaning. Omissions reduce score and may cause fail.\n\n"
         "Return ONLY valid JSON with keys: verdict (pass/fail), score (0-1), rationale.\n\n"
         f"Query: {query}\n"
         f"Reference answer: {reference}\n"
@@ -89,7 +89,8 @@ def _build_strict_prompt(query: str, snippets: str) -> str:
         "You are a retrieval-grounded assistant. You must answer using only the provided snippets.\n\n"
         "Rules:\n"
         "Use ONLY the provided snippets as evidence. Do not add unstated advice, adjectives, or extra options.\n"
-        "Answer the question directly in 1–3 sentences.\n"
+        "Answer only what the question asks; do not include extra details even if they appear in the snippets.\n"
+        "Prefer a single sentence; use up to 2 sentences only if the question asks for multiple items.\n"
         "Include key specifics from the snippets when relevant: times, durations, distances, names, and why reasons.\n"
         "If the snippets do not contain the answer, say exactly: \"I don't have that in the provided snippets.\"\n\n"
         "Citations:\n"
@@ -106,9 +107,10 @@ def _build_strict_prompt(query: str, snippets: str) -> str:
 
 def _build_facts_prompt(query: str, snippets: str) -> str:
     return (
-        "Extract key facts from the snippets that directly answer the question.\n"
-        "Include times, durations, distances, names, and reasons if present.\n"
-        "Return 3–8 bullet points. Each bullet must end with citations in square brackets.\n\n"
+        "Extract only the facts from the snippets that directly answer the question.\n"
+        "Do not include extra details or optional suggestions not asked for.\n"
+        "Include times, durations, distances, names, and reasons if present and relevant.\n"
+        "Return 2–6 bullet points. Each bullet must end with citations in square brackets.\n\n"
         f"Question: {query}\n\n"
         f"Snippets:\n{snippets}\n\n"
         "Key facts:"
@@ -118,7 +120,8 @@ def _build_facts_prompt(query: str, snippets: str) -> str:
 def _build_answer_with_facts_prompt(query: str, facts: str) -> str:
     return (
         "You are a retrieval-grounded assistant. Use ONLY the key facts below.\n"
-        "Answer the question directly in 1–3 sentences.\n"
+        "Answer only what the question asks. Do not add any other details.\n"
+        "Prefer a single sentence; use up to 2 sentences only if needed for multiple items.\n"
         "Every sentence with factual content must end with citations from the key facts.\n"
         "If the facts do not contain the answer, say exactly: \"I don't have that in the provided snippets.\"\n\n"
         f"Question: {query}\n\n"
@@ -138,6 +141,7 @@ def _build_repair_prompt(query: str, snippets: str, draft: str) -> str:
         "Fix the draft answer to comply with the rules:\n"
         "Remove any content not explicitly supported by snippets.\n"
         "Add missing key facts that ARE in snippets (times/durations/distances/why).\n"
+        "Do not add any extra details not required by the question.\n"
         "Ensure each sentence with factual content ends with correct snippet citations.\n"
         "Return the corrected answer in the same output format.\n"
     )
