@@ -75,6 +75,7 @@ def main() -> None:
     parser.add_argument("--ollama-embedding-model", default="nomic-embed-text")
     parser.add_argument("--use-chroma", action="store_true")
     parser.add_argument("--hybrid", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--trace-misses", action="store_true")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -109,7 +110,11 @@ def main() -> None:
     for item in dataset:
         query = item["query"]
         expected = set(item["expected_chunks"])
-        citations = retriever.retrieve(query, top_k=args.top_k)
+        trace = None
+        if args.trace_misses and hasattr(retriever, "retrieve_with_trace"):
+            citations, trace = retriever.retrieve_with_trace(query, top_k=args.top_k)
+        else:
+            citations = retriever.retrieve(query, top_k=args.top_k)
         retrieved_ids = [c.chunk_id for c in citations]
 
         for k in totals:
@@ -122,6 +127,21 @@ def main() -> None:
                 "retrieved_chunks": retrieved_ids,
             }
         )
+
+        if args.trace_misses and trace and not expected.intersection(retrieved_ids):
+            print("\n=== Retrieval Trace (miss) ===")
+            print(f"Query: {trace['query']}")
+            print(f"Weights: w_vec={trace['w_vec']} w_lex={trace['w_lex']} k_rrf={trace['k_rrf']}")
+            print(f"Lex query: {trace['lex_query']}")
+            print("Top 10 Lexical:")
+            for row in trace["bm25_top"]:
+                print(row)
+            print("Top 10 Vector:")
+            for row in trace["vec_top"]:
+                print(row)
+            print("Top 10 Fused:")
+            for row in trace["fused_top"][:10]:
+                print(row)
 
     total_queries = len(dataset) if dataset else 1
     recall_1 = totals[1] / total_queries

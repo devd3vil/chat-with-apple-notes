@@ -13,7 +13,7 @@ from rank_bm25 import BM25Okapi
 
 from src.models import Chunk
 
-_PUNCT_RE = re.compile(r"[^\w\s]")
+_PUNCT_RE = re.compile(r"[^\w\s:-]")
 _STOPWORDS = {
     "the",
     "a",
