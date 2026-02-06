@@ -3,6 +3,7 @@ FastAPI application for Apple Notes RAG.
 """
 
 from pathlib import Path
+import logging
 from typing import Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
@@ -20,6 +21,8 @@ from src.retriever import HybridRetriever, Retriever
 from src.bm25 import BM25Index
 from src.store import ChromaStore, VectorStore
 from src.sync import SyncState, incremental_sync
+
+logger = logging.getLogger(__name__)
 
 
 class IngestRequest(BaseModel):
@@ -227,7 +230,8 @@ def create_app(
             return
         if isinstance(retriever, HybridRetriever):
             try:
-                retriever.warmup_reranker()
+                warmed = retriever.warmup_reranker()
+                logger.info("Reranker warmup complete (success=%s)", warmed)
             except Exception:
                 pass
 
