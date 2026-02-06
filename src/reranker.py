@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import hashlib
 import json
 import re
@@ -11,6 +12,11 @@ from typing import Any, Optional
 
 from src.constraint_extractor import Constraints
 from src.llm import LLM
+
+try:
+    from sentence_transformers import CrossEncoder
+except Exception:  # pragma: no cover - optional dependency
+    CrossEncoder = None
 
 _TIME_REGEX = re.compile(r"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s?(?:am|pm)\b", re.IGNORECASE)
 
@@ -174,41 +180,8 @@ def _heuristic_score(query: str, constraints: Constraints, candidate: Candidate)
         else:
             direct = max(0.0, direct - 1.0)
 
-    if _TIME_REGEX.search(candidate.text) or re.search(r"\b\d{1,4}\b", candidate.text):
-        specificity = 3.0
-    elif re.search(r"\b[A-Z][a-z]+\b", candidate.text):
-        specificity = 2.0
-    else:
-        specificity = 1.0
-
-    constraints_exist = bool(
-        constraints.explicit_datetime
-        or constraints.relative_time
-        or constraints.time_of_day
-        or constraints.entities
-        or constraints.scope_hints
-    )
-
-    if not constraints_exist:
-        constraint_support = 1.5
-        anti_contam = 1.5
-    else:
-        matches = 0
-        if constraints.entities:
-            matches += sum(1 for ent in constraints.entities if ent.lower() in text_lower)
-        if constraints.time_of_day and constraints.time_of_day in text_lower:
-            matches += 1
-        if constraints.relative_time and constraints.relative_time in text_lower:
-            matches += 1
-        if constraints.scope_hints:
-            matches += sum(1 for hint in constraints.scope_hints if hint in text_lower)
-
-        if matches > 0:
-            constraint_support = 3.0
-            anti_contam = 2.0
-        else:
-            constraint_support = 0.0
-            anti_contam = 0.0
+    specificity = _specificity_score(candidate.text)
+    constraint_support, anti_contam = _constraint_scores(constraints, text_lower)
 
     total = 0.55 * direct + 0.25 * specificity + 0.15 * constraint_support + 0.05 * anti_contam
     return ScoredCandidate(
@@ -245,9 +218,18 @@ def _sort_scored(scored: list[ScoredCandidate], constraints: Constraints) -> lis
 
 
 class Reranker:
-    def __init__(self, llm: Optional[LLM], cache_ttl_seconds: int = 86400):
+    def __init__(
+        self,
+        llm: Optional[LLM],
+        cache_ttl_seconds: int = 86400,
+        backend: str = "cross-encoder",
+        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    ):
         self.llm = llm
         self.cache = RerankCache(ttl_seconds=cache_ttl_seconds)
+        self.backend = backend
+        self.cross_encoder_model = cross_encoder_model
+        self._cross_encoder = None
 
     def rerank(
         self,
@@ -264,60 +246,181 @@ class Reranker:
         if cached is not None:
             return cached, {"used_llm": False, "cache_hit": True}
 
-        if not self.llm:
-            scored = [_heuristic_score(query, constraints, c) for c in candidates]
+        if self.backend == "cross-encoder":
+            scored = self._rerank_with_cross_encoder(query, constraints, candidates)
+            if scored is None:
+                scored = [_heuristic_score(query, constraints, c) for c in candidates]
+                scored = _sort_scored(scored, constraints)
+                self.cache.set(key, scored)
+                return scored, {
+                    "used_llm": False,
+                    "cache_hit": False,
+                    "fallback": "heuristic",
+                    "cross_encoder": "unavailable",
+                }
             scored = _sort_scored(scored, constraints)
             self.cache.set(key, scored)
-            return scored, {"used_llm": False, "cache_hit": False, "fallback": "heuristic"}
+            return scored, {"used_llm": False, "cache_hit": False, "backend": "cross-encoder"}
 
-        prompt = _build_prompt(query, constraints, candidates)
-        raw = self.llm.generate(prompt, max_tokens=max_tokens)
-        data = _safe_json_loads(raw)
-        if not data or "scores" not in data:
-            scored = [_heuristic_score(query, constraints, c) for c in candidates]
+        if self.backend == "llm":
+            if not self.llm:
+                scored = [_heuristic_score(query, constraints, c) for c in candidates]
+                scored = _sort_scored(scored, constraints)
+                self.cache.set(key, scored)
+                return scored, {"used_llm": False, "cache_hit": False, "fallback": "heuristic"}
+
+            prompt = _build_prompt(query, constraints, candidates)
+            raw = self.llm.generate(prompt, max_tokens=max_tokens)
+            data = _safe_json_loads(raw)
+            if not data or "scores" not in data:
+                scored = [_heuristic_score(query, constraints, c) for c in candidates]
+                scored = _sort_scored(scored, constraints)
+                self.cache.set(key, scored)
+                return scored, {"used_llm": True, "cache_hit": False, "parse_error": True}
+
+            scores_by_id: dict[str, dict[str, float]] = {}
+            for row in data.get("scores", []):
+                cid = row.get("chunk_id")
+                if not cid:
+                    continue
+                direct = float(row.get("direct", 0.0))
+                specificity = float(row.get("specificity", 0.0))
+                constraint_support = float(row.get("constraint_support", 0.0))
+                anti_contam = float(row.get("anti_contam", 0.0))
+                total = row.get("total")
+                if total is None:
+                    total = (
+                        0.55 * direct
+                        + 0.25 * specificity
+                        + 0.15 * constraint_support
+                        + 0.05 * anti_contam
+                    )
+                scores_by_id[cid] = {
+                    "direct": direct,
+                    "specificity": specificity,
+                    "constraint_support": constraint_support,
+                    "anti_contam": anti_contam,
+                    "total": float(total),
+                }
+
+            scored: list[ScoredCandidate] = []
+            for cand in candidates:
+                entry = scores_by_id.get(cand.chunk_id)
+                if not entry:
+                    scored.append(_heuristic_score(query, constraints, cand))
+                    continue
+                scored.append(
+                    ScoredCandidate(
+                        chunk=cand,
+                        scores={
+                            "direct": entry["direct"],
+                            "specificity": entry["specificity"],
+                            "constraint_support": entry["constraint_support"],
+                            "anti_contam": entry["anti_contam"],
+                        },
+                        total=entry["total"],
+                    )
+                )
+
             scored = _sort_scored(scored, constraints)
             self.cache.set(key, scored)
-            return scored, {"used_llm": True, "cache_hit": False, "parse_error": True}
+            return scored, {"used_llm": True, "cache_hit": False}
 
-        scores_by_id: dict[str, dict[str, float]] = {}
-        for row in data.get("scores", []):
-            cid = row.get("chunk_id")
-            if not cid:
-                continue
-            direct = float(row.get("direct", 0.0))
-            specificity = float(row.get("specificity", 0.0))
-            constraint_support = float(row.get("constraint_support", 0.0))
-            anti_contam = float(row.get("anti_contam", 0.0))
-            total = row.get("total")
-            if total is None:
-                total = 0.55 * direct + 0.25 * specificity + 0.15 * constraint_support + 0.05 * anti_contam
-            scores_by_id[cid] = {
-                "direct": direct,
-                "specificity": specificity,
-                "constraint_support": constraint_support,
-                "anti_contam": anti_contam,
-                "total": float(total),
-            }
+        scored = [_heuristic_score(query, constraints, c) for c in candidates]
+        scored = _sort_scored(scored, constraints)
+        self.cache.set(key, scored)
+        return scored, {"used_llm": False, "cache_hit": False, "backend": "heuristic"}
 
+    def _get_cross_encoder(self):
+        if self._cross_encoder is not None:
+            return self._cross_encoder
+        if CrossEncoder is None:
+            return None
+        self._cross_encoder = CrossEncoder(self.cross_encoder_model)
+        return self._cross_encoder
+
+    def _rerank_with_cross_encoder(
+        self,
+        query: str,
+        constraints: Constraints,
+        candidates: list[Candidate],
+    ) -> Optional[list[ScoredCandidate]]:
+        model = self._get_cross_encoder()
+        if model is None:
+            return None
+        pairs = [(query, cand.text) for cand in candidates]
+        try:
+            scores = model.predict(pairs)
+        except Exception:
+            return None
         scored: list[ScoredCandidate] = []
-        for cand in candidates:
-            entry = scores_by_id.get(cand.chunk_id)
-            if not entry:
-                scored.append(_heuristic_score(query, constraints, cand))
-                continue
+        for cand, score in zip(candidates, scores):
+            direct = _scale_cross_score(score, constraints, cand)
+            specificity = _specificity_score(cand.text)
+            constraint_support, anti_contam = _constraint_scores(constraints, cand.text.lower())
+            total = 0.55 * direct + 0.25 * specificity + 0.15 * constraint_support + 0.05 * anti_contam
             scored.append(
                 ScoredCandidate(
                     chunk=cand,
                     scores={
-                        "direct": entry["direct"],
-                        "specificity": entry["specificity"],
-                        "constraint_support": entry["constraint_support"],
-                        "anti_contam": entry["anti_contam"],
+                        "direct": direct,
+                        "specificity": specificity,
+                        "constraint_support": constraint_support,
+                        "anti_contam": anti_contam,
                     },
-                    total=entry["total"],
+                    total=total,
                 )
             )
+        return scored
 
-        scored = _sort_scored(scored, constraints)
-        self.cache.set(key, scored)
-        return scored, {"used_llm": True, "cache_hit": False}
+
+def _specificity_score(text: str) -> float:
+    if _TIME_REGEX.search(text) or re.search(r"\\b\\d{1,4}\\b", text):
+        return 3.0
+    if re.search(r"\\b[A-Z][a-z]+\\b", text):
+        return 2.0
+    return 1.0
+
+
+def _constraint_scores(constraints: Constraints, text_lower: str) -> tuple[float, float]:
+    constraints_exist = bool(
+        constraints.explicit_datetime
+        or constraints.relative_time
+        or constraints.time_of_day
+        or constraints.entities
+        or constraints.scope_hints
+    )
+
+    if not constraints_exist:
+        return 1.5, 1.5
+
+    matches = 0
+    if constraints.entities:
+        matches += sum(1 for ent in constraints.entities if ent.lower() in text_lower)
+    if constraints.time_of_day and constraints.time_of_day in text_lower:
+        matches += 1
+    if constraints.relative_time and constraints.relative_time in text_lower:
+        matches += 1
+    if constraints.scope_hints:
+        matches += sum(1 for hint in constraints.scope_hints if hint in text_lower)
+
+    if matches > 0:
+        return 3.0, 2.0
+    return 0.0, 0.0
+
+
+def _scale_cross_score(score: float, constraints: Constraints, candidate: Candidate) -> float:
+    try:
+        bounded = max(-5.0, min(5.0, float(score)))
+    except (TypeError, ValueError):
+        bounded = 0.0
+    direct = 3.0 / (1.0 + math.exp(-bounded))
+
+    if constraints.entities:
+        text_lower = candidate.text.lower()
+        if any(ent.lower() in text_lower for ent in constraints.entities):
+            direct = min(3.0, direct + 0.5)
+        else:
+            direct = max(0.0, direct - 0.5)
+
+    return direct

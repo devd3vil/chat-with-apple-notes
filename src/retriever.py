@@ -107,6 +107,8 @@ class HybridRetriever:
         constraint_mode: str = "soft",
         time_query_require_time_evidence: bool = True,
         rerank_llm: LLM | None = None,
+        rerank_backend: str = "cross-encoder",
+        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         self.store = store
         self.embedder = embedder
@@ -127,7 +129,12 @@ class HybridRetriever:
         self.rerank_cache_ttl_seconds = rerank_cache_ttl_seconds
         self.constraint_mode = constraint_mode
         self.time_query_require_time_evidence = time_query_require_time_evidence
-        self.reranker = Reranker(rerank_llm, cache_ttl_seconds=rerank_cache_ttl_seconds)
+        self.reranker = Reranker(
+            rerank_llm,
+            cache_ttl_seconds=rerank_cache_ttl_seconds,
+            backend=rerank_backend,
+            cross_encoder_model=cross_encoder_model,
+        )
 
     def _normalize_query_for_lexical(self, query_text: str) -> str:
         q = query_text.strip()

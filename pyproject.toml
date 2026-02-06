@@ -30,6 +30,7 @@ dependencies = [
     "fastapi>=0.104",
     "uvicorn>=0.24",
     "rank-bm25>=0.2.2",
+    "sentence-transformers>=2.5.0",
 ]
 
 [project.optional-dependencies]

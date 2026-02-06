@@ -154,6 +154,8 @@ def create_app(
         final_context_k=settings.final_context_k,
         max_context_tokens=settings.max_context_tokens,
         rerank_cache_ttl_seconds=settings.rerank_cache_ttl_seconds,
+        rerank_backend=settings.rerank_backend,
+        cross_encoder_model=settings.cross_encoder_model,
         constraint_mode=settings.constraint_mode,
         time_query_require_time_evidence=settings.time_query_require_time_evidence,
         rerank_llm=llm,

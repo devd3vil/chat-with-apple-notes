@@ -115,6 +115,8 @@ class RAGChain:
         
         prompt = f"""You are a Q&A bot for a user's Apple Notes. Use only the provided snippets.
 Only answer if the snippets are relevant to the question. If not, say you could not find relevant information in the notes.
+Answer only what the question asks; do not add extra details or options.
+Include key specifics when relevant (times, durations, names). Keep it to 1–2 sentences.
 Cite your sources using [1], [2], etc. Cite only snippets you used.
 Be concise, clear, and directly address the question.
 

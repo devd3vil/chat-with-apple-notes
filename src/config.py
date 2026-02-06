@@ -26,10 +26,12 @@ class Settings(BaseSettings):
     bm25_index_path: Path = Path("data/bm25_index.json")
     rerank_enabled: bool = True
     hybrid_topn: int = 50
-    rerank_candidates_n: int = 30
+    rerank_candidates_n: int = 10
     final_context_k: int = 4
     max_context_tokens: int = 1200
     rerank_cache_ttl_seconds: int = 86400
+    rerank_backend: str = "cross-encoder"
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     constraint_mode: str = "soft"
     time_query_require_time_evidence: bool = True
     

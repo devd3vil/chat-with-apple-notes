@@ -328,6 +328,7 @@ def test_entity_preference_after_rerank(tmp_path):
         bm25=bm25,
         enable_mmr=False,
         rerank_enabled=True,
+        rerank_backend="heuristic",
         final_context_k=1,
         max_context_tokens=200,
     )
