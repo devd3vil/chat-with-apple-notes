@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     rerank_cache_ttl_seconds: int = 86400
     rerank_backend: str = "cross-encoder"
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_warmup_enabled: bool = True
     constraint_mode: str = "soft"
     time_query_require_time_evidence: bool = True
     

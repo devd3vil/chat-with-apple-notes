@@ -221,6 +221,16 @@ def create_app(
             bm25=bm25,
         )
 
+    @app.on_event("startup")
+    def _warmup_reranker() -> None:
+        if not settings.rerank_warmup_enabled:
+            return
+        if isinstance(retriever, HybridRetriever):
+            try:
+                retriever.warmup_reranker()
+            except Exception:
+                pass
+
     @app.post("/ingest")
     def ingest(request: IngestRequest) -> dict:
         export_dir = _resolve_export_dir(request.export_dir, settings)

@@ -484,6 +484,12 @@ class HybridRetriever:
         }
         return citations, trace
 
+    def warmup_reranker(self) -> bool:
+        try:
+            return self.reranker.warmup()
+        except Exception:
+            return False
+
     def retrieve_with_trace(self, query_text: str, top_k: int = 5) -> tuple[list[Citation], dict]:
         citations, trace = self.retrieve(query_text, top_k=top_k, include_trace=True)
         return citations, trace

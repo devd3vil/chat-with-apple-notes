@@ -331,6 +331,18 @@ class Reranker:
         self.cache.set(key, scored)
         return scored, {"used_llm": False, "cache_hit": False, "backend": "heuristic"}
 
+    def warmup(self) -> bool:
+        if self.backend != "cross-encoder":
+            return False
+        model = self._get_cross_encoder()
+        if model is None:
+            return False
+        try:
+            _ = model.predict([("warmup query", "warmup text")])
+        except Exception:
+            return False
+        return True
+
     def _get_cross_encoder(self):
         if self._cross_encoder is not None:
             return self._cross_encoder
