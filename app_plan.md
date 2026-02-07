@@ -418,9 +418,9 @@ Return:
 - [x] Add model pull UI + progress
 - [x] Persist setup wizard config (embed/chat models + completion state)
 - [x] Add retry/resume/error states for model downloads
-- [ ] Add folder picker + permissions
-- [ ] Add explicit permission denial/retry UX
-- [ ] Add main tabs: Search / Ask / Sync / Health
+- [x] Add folder picker + permissions
+- [x] Add explicit permission denial/retry UX
+- [x] Add main tabs: Search / Ask / Sync / Health
 - [ ] Add logging + error surfaces
 - [ ] Add diagnostics export action (redacted)
 - [ ] Add storage management actions (rebuild/clear/reset)

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -33,6 +34,7 @@ struct BackendState {
 struct SetupConfig {
     embed_model: String,
     chat_model: String,
+    notes_export_dir: Option<String>,
     wizard_completed: bool,
 }
 
@@ -41,6 +43,7 @@ impl Default for SetupConfig {
         Self {
             embed_model: DEFAULT_EMBED_MODEL.to_string(),
             chat_model: DEFAULT_CHAT_MODEL.to_string(),
+            notes_export_dir: None,
             wizard_completed: false,
         }
     }
@@ -63,6 +66,16 @@ struct PullModelResult {
     error_type: String,
     retryable: bool,
     timed_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportFolderStatus {
+    path: String,
+    exists: bool,
+    is_dir: bool,
+    supported_files: usize,
+    permission_denied: bool,
+    message: String,
 }
 
 fn find_backend_workdir() -> std::path::PathBuf {
@@ -282,6 +295,53 @@ fn parse_ollama_list_models(raw: &str) -> Vec<String> {
     models
 }
 
+fn is_supported_export_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            matches!(ext.as_str(), "html" | "htm" | "md" | "markdown" | "txt")
+        })
+        .unwrap_or(false)
+}
+
+fn count_supported_files(root: &Path) -> (usize, bool) {
+    let mut count = 0usize;
+    let mut permission_denied = false;
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(err) => {
+                if err.kind() == ErrorKind::PermissionDenied {
+                    permission_denied = true;
+                }
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    if err.kind() == ErrorKind::PermissionDenied {
+                        permission_denied = true;
+                    }
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if is_supported_export_file(&path) {
+                count += 1;
+            }
+        }
+    }
+
+    (count, permission_denied)
+}
+
 fn classify_pull_failure(output: &str, timed_out: bool) -> (String, bool) {
     if timed_out {
         return ("timeout".to_string(), true);
@@ -360,14 +420,109 @@ fn setup_save_config(
         return Err("chat_model must not be empty".to_string());
     }
 
+    let path = setup_config_path(&app)?;
+    let existing = if path.exists() {
+        read_setup_config(&path)?
+    } else {
+        SetupConfig::default()
+    };
+
     let config = SetupConfig {
         embed_model,
         chat_model,
+        notes_export_dir: existing.notes_export_dir,
         wizard_completed,
     };
-    let path = setup_config_path(&app)?;
     write_setup_config(&path, &config)?;
     Ok(config)
+}
+
+#[tauri::command]
+fn setup_save_notes_export_dir(
+    app: tauri::AppHandle,
+    notes_export_dir: Option<String>,
+) -> Result<SetupConfig, String> {
+    let path = setup_config_path(&app)?;
+    let mut config = if path.exists() {
+        read_setup_config(&path)?
+    } else {
+        SetupConfig::default()
+    };
+    config.notes_export_dir = notes_export_dir
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    write_setup_config(&path, &config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn pick_export_folder() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose folder with prompt \"Select Notes Export Folder\")",
+            ])
+            .output()
+            .map_err(|err| format!("Failed to run folder picker: {err}"))?;
+
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(value));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if stderr.contains("-128") {
+            return Ok(None);
+        }
+
+        return Err(format!("Folder picker failed: {}", stderr.trim()));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Folder picker command is only implemented for macOS".to_string())
+    }
+}
+
+#[tauri::command]
+fn validate_export_folder(path: String) -> ExportFolderStatus {
+    let trimmed = path.trim().to_string();
+    let folder = Path::new(&trimmed);
+    let exists = folder.exists();
+    let is_dir = folder.is_dir();
+    let (supported_files, permission_denied) = if exists && is_dir {
+        count_supported_files(folder)
+    } else {
+        (0, false)
+    };
+
+    let message = if trimmed.is_empty() {
+        "No folder selected.".to_string()
+    } else if !exists {
+        "Selected folder does not exist.".to_string()
+    } else if !is_dir {
+        "Selected path is not a directory.".to_string()
+    } else if permission_denied {
+        "Permission denied while reading selected folder. Grant access in macOS System Settings and retry validation.".to_string()
+    } else if supported_files == 0 {
+        "Folder has no supported note files (.html/.htm/.md/.markdown/.txt).".to_string()
+    } else {
+        format!("Folder is valid. Found {supported_files} supported note file(s).")
+    };
+
+    ExportFolderStatus {
+        path: trimmed,
+        exists,
+        is_dir,
+        supported_files,
+        permission_denied,
+        message,
+    }
 }
 
 #[tauri::command]
@@ -493,10 +648,13 @@ fn main() {
             backend_base_url,
             setup_load_config,
             setup_save_config,
+            setup_save_notes_export_dir,
             ollama_status,
             open_ollama_download_page,
             start_ollama,
-            ollama_pull_model
+            ollama_pull_model,
+            pick_export_folder,
+            validate_export_folder
         ])
         .setup(|app| {
             let state: State<BackendState> = app.state();
@@ -531,7 +689,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_pull_failure, parse_backend_port, parse_ollama_list_models};
+    use super::{
+        classify_pull_failure, count_supported_files, is_supported_export_file, parse_backend_port,
+        parse_ollama_list_models,
+    };
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_backend_port_none_is_none() {
@@ -596,5 +760,38 @@ mod tests {
         let (error_type, retryable) = classify_pull_failure("connection refused", false);
         assert_eq!(error_type, "offline".to_string());
         assert!(retryable);
+    }
+
+    #[test]
+    fn supported_export_file_extensions_are_detected() {
+        assert!(is_supported_export_file(Path::new("note.html")));
+        assert!(is_supported_export_file(Path::new("note.md")));
+        assert!(is_supported_export_file(Path::new("note.TXT")));
+        assert!(!is_supported_export_file(Path::new("note.pdf")));
+    }
+
+    #[test]
+    fn count_supported_files_returns_count_and_permission_flag() {
+        let mut dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        dir.push(format!(
+            "notes_rag_app_count_supported_files_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+
+        fs::create_dir_all(&dir).expect("create test dir");
+        fs::write(dir.join("a.html"), "alpha").expect("write html");
+        fs::write(dir.join("b.txt"), "beta").expect("write txt");
+        fs::write(dir.join("c.pdf"), "gamma").expect("write pdf");
+
+        let (count, permission_denied) = count_supported_files(&dir);
+        assert_eq!(count, 2);
+        assert!(!permission_denied);
+
+        fs::remove_dir_all(&dir).expect("cleanup test dir");
     }
 }

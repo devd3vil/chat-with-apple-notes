@@ -1,4 +1,4 @@
-# Notes RAG Desktop (Milestone 1-2)
+# Notes RAG Desktop (Milestone 1-3)
 
 This Tauri shell:
 
@@ -6,6 +6,8 @@ This Tauri shell:
 - includes a setup wizard panel for Ollama detection/start/install guidance,
 - lets users choose models, pull them locally, and persist setup config.
 - supports retrying failed pulls and resuming pending model pulls.
+- includes Step 3 tabs for Search, Ask, and Sync/Health with folder ingest actions.
+- surfaces folder permission-denied errors with retry guidance for macOS privacy settings.
 
 ## Dev Run
 
@@ -35,4 +37,4 @@ The UI resolves backend base URL from the app shell and polls `<base_url>/health
 
 - The backend process is spawned on app startup and killed on window close.
 - Setup wizard config is stored in app config dir as `setup.json`.
-- Main app tabs (Search / Ask / Sync / Health) are planned for the next milestone.
+- Folder picker uses a macOS native chooser via AppleScript.
