@@ -74,6 +74,47 @@ body {
   color: var(--muted);
 }
 
+.wizard-help {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.field input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  color: var(--text);
+  background: #fff;
+}
+
+.field input:focus {
+  outline: 2px solid var(--accent-weak);
+  border-color: var(--accent);
+}
+
 pre {
   background: #f9f7f3;
   padding: 12px;
@@ -84,7 +125,6 @@ pre {
 }
 
 button {
-  margin-top: 12px;
   padding: 10px 16px;
   background: var(--accent);
   color: #fff;
@@ -96,4 +136,19 @@ button {
 
 button:hover {
   background: #176473;
+}
+
+button.secondary {
+  background: #eef5f7;
+  color: var(--accent);
+  border: 1px solid #c8dce2;
+}
+
+button.secondary:hover {
+  background: #ddeef3;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }

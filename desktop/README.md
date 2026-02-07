@@ -1,6 +1,11 @@
-# Notes RAG Desktop (Milestone 1)
+# Notes RAG Desktop (Milestone 1-2)
 
-This is a minimal Tauri shell that starts the backend and shows `/health`.
+This Tauri shell:
+
+- starts the backend sidecar and checks `/health`,
+- includes a setup wizard panel for Ollama detection/start/install guidance,
+- lets users choose models, pull them locally, and persist setup config.
+- supports retrying failed pulls and resuming pending model pulls.
 
 ## Dev Run
 
@@ -9,6 +14,12 @@ From repo root:
 ```bash
 cd desktop/src-tauri
 cargo tauri dev
+```
+
+If your machine has Tauri CLI v2 globally, run with a v1 CLI compatible with this app:
+
+```bash
+PATH="$PWD/../../.tools/bin:$PATH" cargo tauri dev
 ```
 
 Environment overrides:
@@ -23,4 +34,5 @@ The UI resolves backend base URL from the app shell and polls `<base_url>/health
 ## Notes
 
 - The backend process is spawned on app startup and killed on window close.
-- Next milestone adds a setup wizard and main tabs.
+- Setup wizard config is stored in app config dir as `setup.json`.
+- Main app tabs (Search / Ask / Sync / Health) are planned for the next milestone.

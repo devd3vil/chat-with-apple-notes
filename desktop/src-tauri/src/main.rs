@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -11,6 +14,11 @@ const DEFAULT_BACKEND_PORT: u16 = 8001;
 const PORT_SCAN_SIZE: u16 = 100;
 const HEALTH_CHECK_TIMEOUT_SECS: u64 = 30;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 250;
+const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+const SETUP_CONFIG_FILE: &str = "setup.json";
+const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
+const DEFAULT_CHAT_MODEL: &str = "neural-chat";
+const DEFAULT_MODEL_PULL_TIMEOUT_SECS: u64 = 1800;
 
 struct BackendRuntime {
     child: Option<Child>,
@@ -19,6 +27,42 @@ struct BackendRuntime {
 
 struct BackendState {
     runtime: Mutex<BackendRuntime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetupConfig {
+    embed_model: String,
+    chat_model: String,
+    wizard_completed: bool,
+}
+
+impl Default for SetupConfig {
+    fn default() -> Self {
+        Self {
+            embed_model: DEFAULT_EMBED_MODEL.to_string(),
+            chat_model: DEFAULT_CHAT_MODEL.to_string(),
+            wizard_completed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OllamaStatus {
+    installed: bool,
+    running: bool,
+    version: Option<String>,
+    models: Vec<String>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PullModelResult {
+    model: String,
+    success: bool,
+    output: String,
+    error_type: String,
+    retryable: bool,
+    timed_out: bool,
 }
 
 fn find_backend_workdir() -> std::path::PathBuf {
@@ -142,10 +186,299 @@ fn wait_for_backend_health(port: u16, child: &mut Child) -> Result<(), String> {
     }
 }
 
+fn setup_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = app
+        .path_resolver()
+        .app_config_dir()
+        .ok_or_else(|| "Unable to resolve app config directory".to_string())?;
+    fs::create_dir_all(&config_dir)
+        .map_err(|err| format!("Failed to create config dir {config_dir:?}: {err}"))?;
+    Ok(config_dir.join(SETUP_CONFIG_FILE))
+}
+
+fn read_setup_config(path: &Path) -> Result<SetupConfig, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read setup config {path:?}: {err}"))?;
+    serde_json::from_str(&raw).map_err(|err| format!("Invalid setup config JSON: {err}"))
+}
+
+fn write_setup_config(path: &Path, config: &SetupConfig) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(config)
+        .map_err(|err| format!("Failed to serialize setup config: {err}"))?;
+    fs::write(path, raw).map_err(|err| format!("Failed to write setup config {path:?}: {err}"))
+}
+
+fn run_command_capture(command: &str, args: &[&str]) -> Result<(bool, String), String> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|err| format!("Failed to run `{command}`: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let combined = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout}\n{stderr}"),
+    };
+    Ok((output.status.success(), combined))
+}
+
+fn run_command_capture_with_timeout(
+    command: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(bool, String, bool), String> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("Failed to run `{command}`: {err}"))?;
+
+    let start = Instant::now();
+    let timed_out = loop {
+        let maybe_status = child
+            .try_wait()
+            .map_err(|err| format!("Failed to poll `{command}` process: {err}"))?;
+        if maybe_status.is_some() {
+            break false;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            break true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("Failed to collect command output for `{command}`: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let combined = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "(no output)".to_string(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout}\n{stderr}"),
+    };
+
+    Ok((output.status.success() && !timed_out, combined, timed_out))
+}
+
+fn parse_ollama_list_models(raw: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("NAME") {
+            continue;
+        }
+        if let Some(name) = trimmed.split_whitespace().next() {
+            if !models.iter().any(|model| model == name) {
+                models.push(name.to_string());
+            }
+        }
+    }
+    models
+}
+
+fn classify_pull_failure(output: &str, timed_out: bool) -> (String, bool) {
+    if timed_out {
+        return ("timeout".to_string(), true);
+    }
+
+    let lower = output.to_lowercase();
+    if lower.contains("no space left")
+        || lower.contains("disk full")
+        || lower.contains("not enough space")
+    {
+        return ("disk_full".to_string(), false);
+    }
+    if lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("i/o timeout")
+        || lower.contains("network is unreachable")
+        || lower.contains("temporary failure in name resolution")
+    {
+        return ("offline".to_string(), true);
+    }
+    if lower.contains("not found")
+        || lower.contains("command not found")
+        || lower.contains("failed to run `ollama`")
+    {
+        return ("not_installed".to_string(), false);
+    }
+    ("unknown".to_string(), true)
+}
+
+fn model_pull_timeout() -> Duration {
+    let timeout = std::env::var("OLLAMA_PULL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MODEL_PULL_TIMEOUT_SECS);
+    Duration::from_secs(timeout)
+}
+
+fn is_ollama_running() -> bool {
+    let tags_url = format!("{OLLAMA_BASE_URL}/api/tags");
+    ureq::get(&tags_url)
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() == 200)
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 fn backend_base_url(state: State<BackendState>) -> Result<String, String> {
     let runtime_guard = state.runtime.lock().map_err(|_| "Lock error".to_string())?;
     Ok(format!("http://127.0.0.1:{}", runtime_guard.port))
+}
+
+#[tauri::command]
+fn setup_load_config(app: tauri::AppHandle) -> Result<SetupConfig, String> {
+    let path = setup_config_path(&app)?;
+    if !path.exists() {
+        return Ok(SetupConfig::default());
+    }
+    read_setup_config(&path)
+}
+
+#[tauri::command]
+fn setup_save_config(
+    app: tauri::AppHandle,
+    embed_model: String,
+    chat_model: String,
+    wizard_completed: bool,
+) -> Result<SetupConfig, String> {
+    let embed_model = embed_model.trim().to_string();
+    let chat_model = chat_model.trim().to_string();
+    if embed_model.is_empty() {
+        return Err("embed_model must not be empty".to_string());
+    }
+    if chat_model.is_empty() {
+        return Err("chat_model must not be empty".to_string());
+    }
+
+    let config = SetupConfig {
+        embed_model,
+        chat_model,
+        wizard_completed,
+    };
+    let path = setup_config_path(&app)?;
+    write_setup_config(&path, &config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn ollama_status() -> OllamaStatus {
+    let version_output = run_command_capture("ollama", &["--version"]);
+    let installed = version_output.is_ok();
+    let version = version_output.ok().and_then(|(_, output)| {
+        output
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string())
+    });
+
+    let running = is_ollama_running();
+    let models = if installed {
+        match run_command_capture("ollama", &["list"]) {
+            Ok((true, output)) => parse_ollama_list_models(&output),
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    let message = if !installed {
+        "Ollama CLI was not found. Install Ollama to continue.".to_string()
+    } else if !running {
+        format!(
+            "Ollama is installed but not responding at {OLLAMA_BASE_URL}. Start Ollama and retry."
+        )
+    } else {
+        "Ollama is installed and running.".to_string()
+    };
+
+    OllamaStatus {
+        installed,
+        running,
+        version,
+        models,
+        message,
+    }
+}
+
+#[tauri::command]
+fn open_ollama_download_page() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg("https://ollama.com/download/mac")
+            .status()
+            .map_err(|err| format!("Failed to open browser for Ollama download: {err}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("Browser open command failed while opening Ollama download page".to_string());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("This helper is only implemented for macOS builds".to_string())
+    }
+}
+
+#[tauri::command]
+fn start_ollama() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(status) = Command::new("open").args(["-a", "Ollama"]).status() {
+            if status.success() {
+                return Ok("Requested launch of Ollama.app".to_string());
+            }
+        }
+    }
+
+    let _ = run_command_capture("ollama", &["--version"])?;
+    Command::new("ollama")
+        .arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start ollama serve: {err}"))?;
+    Ok("Started `ollama serve` in the background".to_string())
+}
+
+#[tauri::command]
+async fn ollama_pull_model(model: String) -> Result<PullModelResult, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("model must not be empty".to_string());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let (success, output, timed_out) =
+            run_command_capture_with_timeout("ollama", &["pull", &model], model_pull_timeout())
+                .map_err(|err| format!("Failed to run `ollama pull {model}`: {err}"))?;
+        let (error_type, retryable) = if success {
+            ("none".to_string(), false)
+        } else {
+            classify_pull_failure(&output, timed_out)
+        };
+
+        Ok(PullModelResult {
+            model,
+            success,
+            output,
+            error_type,
+            retryable,
+            timed_out,
+        })
+    })
+    .await
+    .map_err(|err| format!("Model pull task failed: {err}"))?
 }
 
 fn main() {
@@ -156,29 +489,40 @@ fn main() {
                 port: DEFAULT_BACKEND_PORT,
             }),
         })
-        .invoke_handler(tauri::generate_handler![backend_base_url])
+        .invoke_handler(tauri::generate_handler![
+            backend_base_url,
+            setup_load_config,
+            setup_save_config,
+            ollama_status,
+            open_ollama_download_page,
+            start_ollama,
+            ollama_pull_model
+        ])
         .setup(|app| {
             let state: State<BackendState> = app.state();
             let mut runtime_guard = state.runtime.lock().map_err(|_| "Lock error")?;
             if runtime_guard.child.is_none() {
                 let port = select_backend_port()?;
                 let mut child = spawn_backend(port)?;
-                wait_for_backend_health(port, &mut child)?;
+                if let Err(err) = wait_for_backend_health(port, &mut child) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(err.into());
+                }
                 runtime_guard.port = port;
                 runtime_guard.child = Some(child);
             }
             Ok(())
         })
         .on_window_event(|event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
-                api.prevent_close();
+            if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
                 let state: State<BackendState> = event.window().state();
                 if let Ok(mut runtime_guard) = state.runtime.lock() {
                     if let Some(mut child) = runtime_guard.child.take() {
                         let _ = child.kill();
+                        let _ = child.wait();
                     }
-                }
-                let _ = event.window().close();
+                };
             }
         })
         .run(tauri::generate_context!())
@@ -187,7 +531,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_backend_port;
+    use super::{classify_pull_failure, parse_backend_port, parse_ollama_list_models};
 
     #[test]
     fn parse_backend_port_none_is_none() {
@@ -212,5 +556,45 @@ mod tests {
     fn parse_backend_port_invalid_is_error() {
         let err = parse_backend_port(Some("abc".to_string())).expect_err("expected error");
         assert!(err.contains("Invalid BACKEND_PORT value"));
+    }
+
+    #[test]
+    fn parse_ollama_list_models_skips_header_and_empty_lines() {
+        let raw = "NAME            ID              SIZE    MODIFIED\nnomic-embed-text abc123          274 MB  2 days ago\n\nneural-chat     def456          4.1 GB  2 days ago";
+        let models = parse_ollama_list_models(raw);
+        assert_eq!(
+            models,
+            vec!["nomic-embed-text".to_string(), "neural-chat".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_ollama_list_models_ignores_duplicates() {
+        let raw =
+            "NAME ID SIZE MODIFIED\nnomic-embed-text abc 1 B now\nnomic-embed-text xyz 1 B now";
+        let models = parse_ollama_list_models(raw);
+        assert_eq!(models, vec!["nomic-embed-text".to_string()]);
+    }
+
+    #[test]
+    fn classify_pull_failure_timeout_is_retryable() {
+        let (error_type, retryable) = classify_pull_failure("timed out", true);
+        assert_eq!(error_type, "timeout".to_string());
+        assert!(retryable);
+    }
+
+    #[test]
+    fn classify_pull_failure_disk_full_is_not_retryable() {
+        let (error_type, retryable) =
+            classify_pull_failure("write failed: no space left on device", false);
+        assert_eq!(error_type, "disk_full".to_string());
+        assert!(!retryable);
+    }
+
+    #[test]
+    fn classify_pull_failure_offline_is_retryable() {
+        let (error_type, retryable) = classify_pull_failure("connection refused", false);
+        assert_eq!(error_type, "offline".to_string());
+        assert!(retryable);
     }
 }

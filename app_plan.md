@@ -413,10 +413,11 @@ Return:
 - [x] Choose app shell (Tauri)
 - [x] Add service manager (spawn backend, port mgmt, health checks)
 - [ ] Add preflight screen (OS/arch/disk/network checks)
-- [ ] Add setup wizard screens
-- [ ] Add Ollama detection + guided install UX
-- [ ] Add model pull UI + progress
-- [ ] Add retry/resume/error states for model downloads
+- [x] Add setup wizard screens
+- [x] Add Ollama detection + guided install UX
+- [x] Add model pull UI + progress
+- [x] Persist setup wizard config (embed/chat models + completion state)
+- [x] Add retry/resume/error states for model downloads
 - [ ] Add folder picker + permissions
 - [ ] Add explicit permission denial/retry UX
 - [ ] Add main tabs: Search / Ask / Sync / Health
