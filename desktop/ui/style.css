@@ -69,6 +69,11 @@ body {
   box-shadow: 0 12px 24px rgba(31, 27, 22, 0.08);
 }
 
+.backend-url {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
 pre {
   background: #f9f7f3;
   padding: 12px;

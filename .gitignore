@@ -29,3 +29,6 @@ notes_export/
 
 # Chroma vector database (user-specific)
 chroma_db/
+
+# Rust desktop app build artifacts
+desktop/src-tauri/target/

@@ -15,10 +15,10 @@ Environment overrides:
 
 - `BACKEND_CMD` (default: `python`)
 - `BACKEND_ARGS` (extra args appended)
-- `BACKEND_PORT` (default: `8001`)
+- `BACKEND_PORT` (optional fixed port; if unset, app picks an available local port starting from `8001`)
 - `BACKEND_WORKDIR` (default: repo root if detected)
 
-The UI will poll `http://127.0.0.1:8001/health`.
+The UI resolves backend base URL from the app shell and polls `<base_url>/health`.
 
 ## Notes
 
