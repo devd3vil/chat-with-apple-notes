@@ -3,6 +3,7 @@ const APP_OWNED_EXPORT_SUBDIR = "NotesLensExport";
 const ONBOARDING_EXPORT_LIMIT = null;
 const ASK_TIMEOUT_MS = 180000;
 const SAVE_THREADS_TIMEOUT_MS = 5000;
+const DRAWER_PREF_KEY = "noteslens.drawer_open";
 const DEFAULT_CONFIG = {
   hasCompletedOnboarding: false,
   exportFolderPath: null,
@@ -68,6 +69,10 @@ const dom = {
   syncBannerBar: document.getElementById("sync-banner-bar"),
   syncCancelBtn: document.getElementById("sync-cancel"),
 
+  mainBody: document.getElementById("main-body"),
+  sidebar: document.getElementById("history-sidebar"),
+  drawerToggleBtn: document.getElementById("toggle-drawer"),
+
   newChatBtn: document.getElementById("new-chat"),
   threadList: document.getElementById("thread-list"),
   transcript: document.getElementById("transcript"),
@@ -109,6 +114,9 @@ const state = {
     exportJobId: null,
     ingestJobId: null,
     cancelRequested: false,
+  },
+  ui: {
+    drawerOpen: true,
   },
 };
 
@@ -310,6 +318,56 @@ function showMainShell() {
   dom.mainShell.hidden = false;
 }
 
+function loadDrawerPreference() {
+  try {
+    const raw = window.localStorage.getItem(DRAWER_PREF_KEY);
+    if (raw === "0" || raw === "false") {
+      state.ui.drawerOpen = false;
+      return;
+    }
+    if (raw === "1" || raw === "true") {
+      state.ui.drawerOpen = true;
+      return;
+    }
+  } catch {
+    // Ignore storage failures and fall back to default.
+  }
+  state.ui.drawerOpen = true;
+}
+
+function saveDrawerPreference() {
+  try {
+    window.localStorage.setItem(DRAWER_PREF_KEY, state.ui.drawerOpen ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function renderDrawer() {
+  if (!dom.mainBody || !dom.sidebar || !dom.drawerToggleBtn) {
+    return;
+  }
+  const open = Boolean(state.ui.drawerOpen);
+  dom.mainBody.classList.toggle("drawer-open", open);
+  dom.mainBody.classList.toggle("drawer-collapsed", !open);
+  dom.sidebar.setAttribute("aria-hidden", open ? "false" : "true");
+  dom.drawerToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  dom.drawerToggleBtn.textContent = open ? "←" : "→";
+  dom.drawerToggleBtn.setAttribute(
+    "aria-label",
+    open ? "Hide your chats panel" : "Show your chats panel",
+  );
+  dom.drawerToggleBtn.title = open ? "Hide your chats panel" : "Show your chats panel";
+}
+
+function setDrawerOpen(nextOpen, persist = true) {
+  state.ui.drawerOpen = Boolean(nextOpen);
+  if (persist) {
+    saveDrawerPreference();
+  }
+  renderDrawer();
+}
+
 function renderStepHeader() {
   const stepMeta = STEP_META[state.onboarding.step];
   dom.stepLabel.textContent = `Step ${state.onboarding.step} of 4`;
@@ -492,19 +550,62 @@ function deriveTitle(thread) {
   return firstUser.text.trim().slice(0, 60);
 }
 
+async function deleteThread(threadId) {
+  const target = state.threads.find((thread) => thread.id === threadId);
+  if (!target) {
+    return;
+  }
+
+  const label = setupFormValue(target.title) || "this chat";
+  const shouldDelete = window.confirm(`Delete "${label}" from history?`);
+  if (!shouldDelete) {
+    return;
+  }
+
+  state.threads = state.threads.filter((thread) => thread.id !== threadId);
+  if (state.threads.length === 0) {
+    const replacement = createThread();
+    state.threads = [replacement];
+    state.activeThreadId = replacement.id;
+  } else if (!state.threads.some((thread) => thread.id === state.activeThreadId)) {
+    state.activeThreadId = sortThreads(state.threads)[0].id;
+  }
+
+  renderThreads();
+  renderTranscript();
+  await saveThreads();
+}
+
 function renderThreads() {
   dom.threadList.innerHTML = "";
   sortThreads(state.threads).forEach((thread) => {
     const item = document.createElement("li");
     item.className = `thread-item${thread.id === state.activeThreadId ? " active" : ""}`;
 
+    const head = document.createElement("div");
+    head.className = "thread-item-head";
+
     const title = document.createElement("h4");
+    title.className = "thread-title";
     title.textContent = thread.title;
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "thread-delete";
+    deleteBtn.textContent = "×";
+    deleteBtn.title = "Delete chat";
+    deleteBtn.setAttribute("aria-label", `Delete chat ${thread.title}`);
+    deleteBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void deleteThread(thread.id);
+    });
 
     const time = document.createElement("span");
     time.textContent = formatRelativeTime(thread.updatedAt);
 
-    item.appendChild(title);
+    head.appendChild(title);
+    head.appendChild(deleteBtn);
+    item.appendChild(head);
     item.appendChild(time);
     item.addEventListener("click", () => {
       state.activeThreadId = thread.id;
@@ -1133,6 +1234,7 @@ async function completeSetupFlow() {
   renderTranscript();
   renderSyncUi();
   showMainShell();
+  renderDrawer();
 }
 
 async function startSyncFlow() {
@@ -1400,6 +1502,9 @@ function wireEvents() {
 
   dom.syncNotesBtn.addEventListener("click", startSyncFlow);
   dom.syncCancelBtn.addEventListener("click", cancelSyncFlow);
+  dom.drawerToggleBtn.addEventListener("click", () => {
+    setDrawerOpen(!state.ui.drawerOpen);
+  });
 
   dom.newChatBtn.addEventListener("click", async () => {
     const thread = createThread();
@@ -1422,6 +1527,7 @@ function wireEvents() {
 
 async function bootstrap() {
   wireEvents();
+  loadDrawerPreference();
 
   state.baseUrl = await resolveBackendUrl();
   await loadConfig();
@@ -1439,6 +1545,7 @@ async function bootstrap() {
   renderTranscript();
   renderSyncUi();
   showMainShell();
+  renderDrawer();
 }
 
 bootstrap();
