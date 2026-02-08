@@ -547,24 +547,48 @@ function renderTranscript() {
     }
 
     if (message.role === "assistant" && Array.isArray(message.citations) && message.citations.length > 0) {
+      const visibleCitations = message.citations.slice(0, 5);
+      const disclosure = document.createElement("details");
+      disclosure.className = "citation-disclosure";
+
+      const summary = document.createElement("summary");
+      const countLabel = visibleCitations.length === 1 ? "citation" : "citations";
+      summary.textContent = `Citations (${visibleCitations.length} ${countLabel})`;
+      disclosure.appendChild(summary);
+
       const citations = document.createElement("ul");
       citations.className = "citation-list";
-      message.citations.slice(0, 5).forEach((citation, idx) => {
+      visibleCitations.forEach((citation, idx) => {
         const item = document.createElement("li");
+
+        const label = document.createElement("div");
+        label.className = "citation-label";
+
         const noteId = setupFormValue(citation?.note_id ?? citation?.source?.note_id);
         const chunkId = setupFormValue(citation?.chunk_id);
         if (noteId && chunkId) {
-          item.textContent = `[${idx + 1}] ${noteId} · ${chunkId}`;
+          label.textContent = `[${idx + 1}] ${noteId} · ${chunkId}`;
         } else if (noteId) {
-          item.textContent = `[${idx + 1}] ${noteId}`;
+          label.textContent = `[${idx + 1}] ${noteId}`;
         } else if (chunkId) {
-          item.textContent = `[${idx + 1}] ${chunkId}`;
+          label.textContent = `[${idx + 1}] ${chunkId}`;
         } else {
-          item.textContent = `[${idx + 1}] Source`;
+          label.textContent = `[${idx + 1}] Source`;
         }
+        item.appendChild(label);
+
+        const snippetText = setupFormValue(citation?.text);
+        if (snippetText) {
+          const snippet = document.createElement("p");
+          snippet.className = "citation-snippet";
+          snippet.textContent = snippetText;
+          item.appendChild(snippet);
+        }
+
         citations.appendChild(item);
       });
-      article.appendChild(citations);
+      disclosure.appendChild(citations);
+      article.appendChild(disclosure);
     }
 
     const meta = document.createElement("div");

@@ -575,13 +575,44 @@ pre {
   }
 }
 
-.citation-list {
-  margin: 10px 0 0;
-  padding-left: 18px;
-  display: grid;
-  gap: 4px;
+.citation-disclosure {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(131, 147, 172, 0.07);
+  padding: 8px 10px;
+}
+
+.citation-disclosure summary {
+  cursor: pointer;
+  user-select: none;
   color: var(--muted);
   font-size: 12px;
+  font-weight: 600;
+}
+
+.citation-disclosure[open] summary {
+  margin-bottom: 7px;
+}
+
+.citation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.citation-label {
+  color: var(--text);
+}
+
+.citation-snippet {
+  margin: 2px 0 0;
+  color: var(--muted);
+  line-height: 1.35;
 }
 
 .meta {
