@@ -2,15 +2,18 @@
 FastAPI application for Apple Notes RAG.
 """
 
-from pathlib import Path
 import logging
-from typing import Optional, Union
+import threading
+from pathlib import Path
+from typing import Literal, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.bm25 import BM25Index
 from src.chain import Chunker, RAGChain
 from src.config import Settings
 from src.embedder import Embedder, OllamaEmbedder
@@ -18,9 +21,8 @@ from src.llm import LLM, OllamaLLM
 from src.models import QAResult
 from src.notes_exporter import extract_text_from_html
 from src.retriever import HybridRetriever, Retriever
-from src.bm25 import BM25Index
 from src.store import ChromaStore, VectorStore
-from src.sync import SyncState, incremental_sync
+from src.sync import SyncState, incremental_sync_detailed
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,10 @@ class IngestRequest(BaseModel):
     reindex: bool = Field(
         default=False,
         description="If true, clears the store and reindexes all notes.",
+    )
+    mode: Optional[Literal["full", "delta"]] = Field(
+        default=None,
+        description="Ingest mode. `full` rebuilds everything, `delta` ingests only changes.",
     )
 
 
@@ -78,15 +84,40 @@ def _store_health_ok(store: VectorStore) -> bool:
     except Exception:
         return False
 
+
+def _path_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            total += child.stat().st_size
+    return total
+
+
+def _resolve_ingest_mode(request: IngestRequest) -> Literal["full", "delta"]:
+    if request.mode in ("full", "delta"):
+        return request.mode
+    if request.reindex:
+        return "full"
+    return "delta"
+
+
 def _run_ingest(
     export_dir: Path,
     embedder: Embedder,
     store: VectorStore,
     chunker: Chunker,
     sync_state: SyncState,
+    mode: Literal["full", "delta"],
     bm25: BM25Index | None = None,
 ) -> dict:
-    changed_notes, removed_note_ids = incremental_sync(export_dir, sync_state)
+    changed_notes, removed_note_ids, delta_summary = incremental_sync_detailed(
+        export_dir,
+        sync_state,
+    )
 
     for note_id in removed_note_ids:
         store.delete_note(note_id)
@@ -111,9 +142,14 @@ def _run_ingest(
         bm25.save()
 
     return {
+        "mode": mode,
         "changed_notes": len(changed_notes),
         "removed_notes": len(removed_note_ids),
         "chunks_indexed": total_chunks,
+        "delta_summary": delta_summary,
+        "last_sync_time": (
+            sync_state.last_sync_time.isoformat() if sync_state.last_sync_time else None
+        ),
     }
 
 
@@ -176,6 +212,13 @@ def create_app(
     sync_state = sync_state or SyncState()
 
     app = FastAPI(title="Apple Notes RAG", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = settings
     app.state.embedder = embedder
     app.state.store = store
@@ -185,6 +228,7 @@ def create_app(
     app.state.chunker = chunker
     app.state.sync_state = sync_state
     app.state.bm25 = bm25
+    app.state.last_ingest_summary = None
 
     @app.exception_handler(StarletteHTTPException)
     def http_exception_handler(
@@ -215,12 +259,13 @@ def create_app(
             return
         if not settings.notes_export_dir.exists():
             return
-        _run_ingest(
+        app.state.last_ingest_summary = _run_ingest(
             export_dir=settings.notes_export_dir,
             embedder=embedder,
             store=store,
             chunker=chunker,
             sync_state=sync_state,
+            mode="delta",
             bm25=bm25,
         )
 
@@ -229,20 +274,28 @@ def create_app(
         if not settings.rerank_warmup_enabled:
             return
         if isinstance(retriever, HybridRetriever):
-            try:
-                warmed = retriever.warmup_reranker()
-                logger.info("Reranker warmup complete (success=%s)", warmed)
-            except Exception:
-                pass
+            def _run_warmup() -> None:
+                try:
+                    warmed = retriever.warmup_reranker()
+                    logger.info("Reranker warmup complete (success=%s)", warmed)
+                except Exception as err:
+                    logger.warning("Reranker warmup failed: %s", err)
+
+            threading.Thread(
+                target=_run_warmup,
+                name="reranker-warmup",
+                daemon=True,
+            ).start()
 
     @app.post("/ingest")
     def ingest(request: IngestRequest) -> dict:
         export_dir = _resolve_export_dir(request.export_dir, settings)
+        mode = _resolve_ingest_mode(request)
 
         if not export_dir.exists() or not export_dir.is_dir():
             raise HTTPException(status_code=400, detail="export_dir must be a directory")
 
-        if request.reindex:
+        if mode == "full":
             if isinstance(store, ChromaStore):
                 store.reset_collection()
             else:
@@ -253,14 +306,17 @@ def create_app(
             sync_state.last_sync_time = None
             sync_state.save()
 
-        return _run_ingest(
+        summary = _run_ingest(
             export_dir=export_dir,
             embedder=embedder,
             store=store,
             chunker=chunker,
             sync_state=sync_state,
+            mode=mode,
             bm25=bm25,
         )
+        app.state.last_ingest_summary = summary
+        return summary
 
     @app.post("/ask", response_model=QAResult)
     def ask(request: AskRequest) -> QAResult:
@@ -275,7 +331,13 @@ def create_app(
         top_k = request.top_k or settings.top_k
         citations = retriever.retrieve(request.query, top_k=top_k)
         results = [
-            {"chunk_id": c.chunk_id, "text": c.text, "score": c.score}
+            {
+                "chunk_id": c.chunk_id,
+                "note_id": c.note_id,
+                "source": c.source,
+                "text": c.text,
+                "score": c.score,
+            }
             for c in citations
         ]
         return SearchResponse(query=request.query, top_k=top_k, results=results)
@@ -292,10 +354,35 @@ def create_app(
     @app.get("/stats")
     def stats() -> dict:
         last_sync = sync_state.last_sync_time.isoformat() if sync_state.last_sync_time else None
+        chroma_bytes = _path_size_bytes(settings.chroma_db_path)
+        bm25_bytes = _path_size_bytes(settings.bm25_index_path)
+        sync_state_bytes = _path_size_bytes(sync_state.state_file)
+        total_store_bytes = chroma_bytes + bm25_bytes + sync_state_bytes
         return {
             "chunks": store.size(),
+            "notes_indexed": len(sync_state.note_metadata),
             "last_sync_time": last_sync,
+            "last_ingest": app.state.last_ingest_summary,
+            "configured_models": {
+                "embed_model": settings.ollama_embedding_model,
+                "chat_model": settings.ollama_chat_model,
+            },
+            "delta_summary": (
+                app.state.last_ingest_summary.get("delta_summary")
+                if isinstance(app.state.last_ingest_summary, dict)
+                else None
+            ),
+            "store_size_bytes": total_store_bytes,
+            "storage_breakdown_bytes": {
+                "chroma": chroma_bytes,
+                "bm25": bm25_bytes,
+                "sync_state": sync_state_bytes,
+            },
+            "manifest_schema_version": sync_state.schema_version,
+            "bm25_schema_version": bm25.schema_version if bm25 else None,
             "chroma_db_path": str(settings.chroma_db_path),
+            "bm25_index_path": str(settings.bm25_index_path),
+            "sync_state_path": str(sync_state.state_file),
         }
 
     return app

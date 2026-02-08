@@ -8,7 +8,14 @@ from datetime import datetime
 from pathlib import Path
 import pytest
 from src.models import Note
-from src.sync import SyncState, has_note_changed, incremental_sync, _compute_hash
+from src.sync import (
+    SYNC_STATE_SCHEMA_VERSION,
+    SyncState,
+    has_note_changed,
+    incremental_sync,
+    incremental_sync_detailed,
+    _compute_hash,
+)
 
 
 class TestSyncState:
@@ -44,6 +51,31 @@ class TestSyncState:
             state2 = SyncState(state_file)
             assert state2.has_note("p123")
             assert state2.last_sync_time is not None
+            assert state2.schema_version == SYNC_STATE_SCHEMA_VERSION
+            assert state2.note_metadata["p123"]["content_hash"] == _compute_hash("Test body")
+
+    def test_sync_state_migrates_legacy_manifest(self):
+        """Legacy sync_state without schema_version should be migrated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "sync_state.json"
+            legacy = {
+                "last_sync_time": "2024-01-01T00:00:00",
+                "note_metadata": {
+                    "p123": {
+                        "modified_at": "2024-01-01T00:00:00",
+                        "body_hash": "abc123",
+                    }
+                },
+            }
+            state_file.write_text(json.dumps(legacy), encoding="utf-8")
+
+            state = SyncState(state_file)
+
+            assert state.schema_version == SYNC_STATE_SCHEMA_VERSION
+            assert state.note_metadata["p123"]["content_hash"] == "abc123"
+            assert state.note_metadata["p123"]["schema_version"] == SYNC_STATE_SCHEMA_VERSION
+            saved = json.loads(state_file.read_text(encoding="utf-8"))
+            assert saved["schema_version"] == SYNC_STATE_SCHEMA_VERSION
     
     def test_sync_state_has_note(self):
         """Test checking if note is tracked."""
@@ -276,6 +308,24 @@ class TestIncrementalSync:
             
             assert len(changed) == 1
             assert changed[0].folder in ["Projects", "Work/Projects", "work_dir"]
+
+    def test_incremental_sync_detailed_returns_summary_counts(self):
+        """Detailed sync should include added/updated/removed summary fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_dir = Path(tmpdir)
+            state_file = Path(tmpdir) / "state.json"
+            note_file = export_dir / "20240115 Note 1 [p123].html"
+            note_file.write_text("<html>Content 1</html>")
+
+            state = SyncState(state_file)
+            changed, removed, summary = incremental_sync_detailed(export_dir, state)
+
+            assert len(changed) == 1
+            assert removed == []
+            assert summary["scanned_notes"] == 1
+            assert summary["added_notes"] == 1
+            assert summary["updated_notes"] == 0
+            assert summary["removed_notes"] == 0
 
 
 class TestSyncStateIntegration:

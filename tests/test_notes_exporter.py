@@ -12,13 +12,17 @@ from src.notes_exporter import (
 )
 
 
-def test_export_notes_interactive_no_crash():
+def test_export_notes_interactive_no_crash(monkeypatch):
     """Test that export_notes_interactive handles gracefully when AppleScript is called"""
-    # This test just ensures the function handles errors gracefully
-    # Actual Apple Notes interaction requires user interaction
+    class _Result:
+        returncode = 1
+        stderr = "User canceled"
+        stdout = ""
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Result())
+
     result = export_notes_interactive()
-    # Result can be None if user cancels or no export happens
-    assert result is None or isinstance(result, Path)
+    assert result is None
 
 
 class TestParseExportedHTML:

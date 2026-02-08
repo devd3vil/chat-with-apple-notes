@@ -50,9 +50,12 @@ class TestRetriever:
         assert len(results) == 2
         assert isinstance(results[0], Citation)
         assert results[0].chunk_id == "chunk1"
+        assert results[0].note_id == "chunk1"
         assert results[0].text == "Some text about Python"
         assert results[0].score == 0.95
+        assert results[0].source == {"note_id": "chunk1"}
         assert results[1].chunk_id == "chunk2"
+        assert results[1].note_id == "chunk2"
         assert results[1].text == "Python is great"
         assert results[1].score == 0.87
     

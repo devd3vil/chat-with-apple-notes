@@ -8,6 +8,7 @@ This Tauri shell:
 - supports retrying failed pulls and resuming pending model pulls.
 - includes Step 3 tabs for Search, Ask, and Sync/Health with folder ingest actions.
 - surfaces folder permission-denied errors with retry guidance for macOS privacy settings.
+- uses backend ingest modes (`full` / `delta`) and displays sync summary in the UI.
 
 ## Dev Run
 

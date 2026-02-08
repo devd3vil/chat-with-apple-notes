@@ -61,15 +61,25 @@ class Citation(BaseModel):
     """Represents a citation in the RAG response."""
     
     chunk_id: str = Field(..., description="ID of the cited chunk")
+    note_id: Optional[str] = Field(
+        default=None,
+        description="Stable source note ID for this citation.",
+    )
     text: str = Field(..., description="Text snippet from the chunk")
     score: float = Field(..., ge=0.0, le=1.0, description="Relevance score (0-1)")
+    source: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Additional stable source metadata for the citation.",
+    )
     
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "chunk_id": "p599_0",
+                "note_id": "p599",
                 "text": "Apple Notes is a note-taking app...",
                 "score": 0.95,
+                "source": {"note_id": "p599"},
             }
         }
     )

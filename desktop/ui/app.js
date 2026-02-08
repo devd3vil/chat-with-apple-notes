@@ -50,6 +50,8 @@ let healthUrl = `${DEFAULT_BACKEND_URL}/health`;
 let baseUrl = DEFAULT_BACKEND_URL;
 let setupState = { ...DEFAULT_SETUP_CONFIG };
 let shellAvailable = true;
+let healthPollTimer = null;
+let ingestInProgress = false;
 
 const pullState = {
   inProgress: false,
@@ -59,7 +61,17 @@ const pullState = {
 };
 
 function tauriInvoke() {
-  return window.__TAURI__?.tauri?.invoke;
+  const tauriGlobal = window.__TAURI__;
+  if (typeof tauriGlobal?.invoke === "function") {
+    return tauriGlobal.invoke;
+  }
+  if (typeof tauriGlobal?.tauri?.invoke === "function") {
+    return tauriGlobal.tauri.invoke;
+  }
+  if (typeof tauriGlobal?.core?.invoke === "function") {
+    return tauriGlobal.core.invoke;
+  }
+  return null;
 }
 
 function truncateText(text, maxChars = 3500) {
@@ -74,6 +86,47 @@ function truncateText(text, maxChars = 3500) {
 
 function setupFormValue(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function readCommandField(payload, snakeKey, camelKey) {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  if (payload[snakeKey] !== undefined) {
+    return payload[snakeKey];
+  }
+  return payload[camelKey];
+}
+
+function normalizeSetupConfig(payload) {
+  const embedModel = setupFormValue(
+    readCommandField(payload, "embed_model", "embedModel") || DEFAULT_SETUP_CONFIG.embed_model,
+  );
+  const chatModel = setupFormValue(
+    readCommandField(payload, "chat_model", "chatModel") || DEFAULT_SETUP_CONFIG.chat_model,
+  );
+  const notesExportDir = setupFormValue(
+    readCommandField(payload, "notes_export_dir", "notesExportDir"),
+  );
+  const wizardCompleted = readCommandField(payload, "wizard_completed", "wizardCompleted");
+  return {
+    embed_model: embedModel || DEFAULT_SETUP_CONFIG.embed_model,
+    chat_model: chatModel || DEFAULT_SETUP_CONFIG.chat_model,
+    notes_export_dir: notesExportDir || null,
+    wizard_completed: Boolean(wizardCompleted),
+  };
+}
+
+function resolveSelectedExportFolder() {
+  const fromState = setupFormValue(setupState.notes_export_dir);
+  if (fromState) {
+    return fromState;
+  }
+  const fromDisplay = setupFormValue(exportFolderPath?.textContent);
+  if (fromDisplay && fromDisplay !== "Not selected") {
+    return fromDisplay;
+  }
+  return "";
 }
 
 function uniqueStrings(values) {
@@ -185,12 +238,27 @@ function updateWizardButtons() {
 }
 
 function updateFolderActionButtons() {
-  const disable = !shellAvailable;
+  const disable = !shellAvailable || ingestInProgress;
   [pickFolderBtn, validateFolderBtn, ingestFullBtn, syncNowBtn].forEach((button) => {
     if (button) {
       button.disabled = disable;
     }
   });
+}
+
+function startHealthPolling() {
+  if (healthPollTimer !== null) {
+    return;
+  }
+  healthPollTimer = window.setInterval(fetchHealth, 5000);
+}
+
+function stopHealthPolling() {
+  if (healthPollTimer === null) {
+    return;
+  }
+  window.clearInterval(healthPollTimer);
+  healthPollTimer = null;
 }
 
 function renderOllamaStatus(status) {
@@ -322,12 +390,7 @@ async function loadSetupConfig() {
 
   try {
     const loaded = await invoke("setup_load_config");
-    setupState = {
-      embed_model: loaded?.embed_model || DEFAULT_SETUP_CONFIG.embed_model,
-      chat_model: loaded?.chat_model || DEFAULT_SETUP_CONFIG.chat_model,
-      notes_export_dir: loaded?.notes_export_dir || null,
-      wizard_completed: Boolean(loaded?.wizard_completed),
-    };
+    setupState = normalizeSetupConfig(loaded);
     setSetupForm(setupState);
     updateExportFolderDisplay();
     setWizardMessage(
@@ -361,19 +424,17 @@ async function saveSetupConfig(wizardCompleted) {
   }
 
   const saved = await invoke("setup_save_config", {
+    embedModel,
+    chatModel,
+    wizardCompleted,
     embed_model: embedModel,
     chat_model: chatModel,
     wizard_completed: wizardCompleted,
   });
-  setupState = {
-    embed_model: saved.embed_model,
-    chat_model: saved.chat_model,
-    notes_export_dir: saved.notes_export_dir || null,
-    wizard_completed: Boolean(saved.wizard_completed),
-  };
+  setupState = normalizeSetupConfig(saved);
   updateExportFolderDisplay();
   setWizardMessage(
-    `Saved setup config (embed=${saved.embed_model}, chat=${saved.chat_model}, completed=${saved.wizard_completed})`,
+    `Saved setup config (embed=${setupState.embed_model}, chat=${setupState.chat_model}, completed=${setupState.wizard_completed})`,
   );
   return setupState;
 }
@@ -383,15 +444,12 @@ async function saveExportFolder(path) {
   if (typeof invoke !== "function") {
     throw new Error("Tauri invoke is not available");
   }
+  const normalizedPath = setupFormValue(path);
   const saved = await invoke("setup_save_notes_export_dir", {
-    notes_export_dir: path,
+    notesExportDir: normalizedPath,
+    notes_export_dir: normalizedPath,
   });
-  setupState = {
-    embed_model: saved.embed_model,
-    chat_model: saved.chat_model,
-    notes_export_dir: saved.notes_export_dir || null,
-    wizard_completed: Boolean(saved.wizard_completed),
-  };
+  setupState = normalizeSetupConfig(saved);
   updateExportFolderDisplay();
   return setupState;
 }
@@ -596,12 +654,17 @@ async function pickExportFolder() {
 
   try {
     const selected = await invoke("pick_export_folder");
-    if (!selected) {
+    const normalizedPath = setupFormValue(
+      typeof selected === "string" ? selected : selected?.path || "",
+    );
+    if (!normalizedPath) {
       setIngestMessage("Folder selection cancelled.");
       return;
     }
-    await saveExportFolder(selected);
-    setIngestMessage(`Selected folder: ${selected}`);
+    setupState = { ...setupState, notes_export_dir: normalizedPath };
+    updateExportFolderDisplay();
+    await saveExportFolder(normalizedPath);
+    setIngestMessage(`Selected folder: ${setupState.notes_export_dir || normalizedPath}`);
   } catch (err) {
     setIngestMessage(`Folder picker failed: ${err}`);
   }
@@ -613,11 +676,17 @@ async function validateExportFolder() {
     setIngestMessage("Cannot validate folder: Tauri invoke is unavailable.");
     return null;
   }
-  const folder = setupState.notes_export_dir;
+  let folder = resolveSelectedExportFolder();
+  if (!folder) {
+    await loadSetupConfig();
+    folder = resolveSelectedExportFolder();
+  }
   if (!folder) {
     setIngestMessage("No export folder selected.");
     return null;
   }
+  setupState = { ...setupState, notes_export_dir: folder };
+  updateExportFolderDisplay();
 
   try {
     const status = await invoke("validate_export_folder", { path: folder });
@@ -630,36 +699,72 @@ async function validateExportFolder() {
 }
 
 async function runIngest(reindex) {
-  const folder = setupState.notes_export_dir;
+  let folder = resolveSelectedExportFolder();
+  if (!folder) {
+    await loadSetupConfig();
+    folder = resolveSelectedExportFolder();
+  }
   if (!folder) {
     setIngestMessage("No export folder selected.");
     return;
   }
+  setupState = { ...setupState, notes_export_dir: folder };
+  updateExportFolderDisplay();
+  ingestInProgress = true;
+  updateFolderActionButtons();
+  stopHealthPolling();
 
-  const validation = await validateExportFolder();
-  if (!validation || !validation.exists || !validation.is_dir || validation.supported_files === 0) {
-    setIngestMessage("Cannot ingest until folder validation passes.", true);
-    return;
-  }
-  if (validation.permission_denied) {
-    setIngestMessage(
-      "Cannot ingest because folder access is denied. Grant access and retry validation first.",
-      true,
-    );
-    return;
-  }
-
-  const modeLabel = reindex ? "full reindex" : "delta sync";
-  setIngestMessage(`Running ${modeLabel}...`, true);
   try {
-    const result = await postJson(`${baseUrl}/ingest`, {
-      export_dir: folder,
-      reindex,
-    });
-    setIngestMessage(`Ingest completed:\n${JSON.stringify(result, null, 2)}`, true);
+    const validation = await validateExportFolder();
+    if (!validation || !validation.exists || !validation.is_dir || validation.supported_files === 0) {
+      setIngestMessage("Cannot ingest until folder validation passes.", true);
+      return;
+    }
+    if (validation.permission_denied) {
+      setIngestMessage(
+        "Cannot ingest because folder access is denied. Grant access and retry validation first.",
+        true,
+      );
+      return;
+    }
+
+    const modeLabel = reindex ? "full reindex" : "delta sync";
+    const mode = reindex ? "full" : "delta";
+    setIngestMessage(`Running ${modeLabel}...`, true);
+
+    const invoke = tauriInvoke();
+    const result =
+      typeof invoke === "function"
+        ? await invoke("backend_ingest", {
+            exportDir: folder,
+            export_dir: folder,
+            mode,
+            reindex,
+          })
+        : await postJson(`${baseUrl}/ingest`, {
+            export_dir: folder,
+            mode,
+            reindex,
+          });
+
+    const summary = result?.delta_summary || {};
+    const lines = [
+      `Ingest completed (${result?.mode || mode}).`,
+      `Changed notes: ${result?.changed_notes ?? 0}`,
+      `Removed notes: ${result?.removed_notes ?? 0}`,
+      `Chunks indexed: ${result?.chunks_indexed ?? 0}`,
+      `Added/Updated/Unchanged: ${summary.added_notes ?? 0}/${summary.updated_notes ?? 0}/${summary.unchanged_notes ?? 0}`,
+      `Scanned notes: ${summary.scanned_notes ?? 0}`,
+      `Last sync time: ${result?.last_sync_time || "n/a"}`,
+    ];
+    setIngestMessage(lines.join("\n"), true);
     await refreshStats();
   } catch (err) {
     setIngestMessage(`Ingest failed: ${err}`, true);
+  } finally {
+    ingestInProgress = false;
+    updateFolderActionButtons();
+    startHealthPolling();
   }
 }
 
@@ -674,8 +779,11 @@ function renderSearchResults(items) {
   }
 
   items.forEach((item, index) => {
+    const noteId = item.note_id || item.source?.note_id || "unknown note";
     const scoreText =
-      typeof item.score === "number" ? `score=${item.score.toFixed(3)}` : "score=n/a";
+      typeof item.score === "number"
+        ? `score=${item.score.toFixed(3)} · note=${noteId}`
+        : `score=n/a · note=${noteId}`;
     const card = createCard(
       `Result ${index + 1} · ${item.chunk_id || "unknown chunk"}`,
       scoreText,
@@ -732,8 +840,11 @@ function renderCitations(citations) {
   }
 
   citations.forEach((citation, index) => {
+    const noteId = citation.note_id || citation.source?.note_id || "unknown note";
     const scoreText =
-      typeof citation.score === "number" ? `score=${citation.score.toFixed(3)}` : "score=n/a";
+      typeof citation.score === "number"
+        ? `score=${citation.score.toFixed(3)} · note=${noteId}`
+        : `score=n/a · note=${noteId}`;
     const card = createCard(
       `Citation ${index + 1} · ${citation.chunk_id || "unknown chunk"}`,
       scoreText,
@@ -810,7 +921,7 @@ async function start() {
 
   wireEvents();
   await fetchHealth();
-  setInterval(fetchHealth, 5000);
+  startHealthPolling();
 
   await loadSetupConfig();
   await checkOllamaStatus();

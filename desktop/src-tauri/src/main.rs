@@ -15,6 +15,7 @@ const DEFAULT_BACKEND_PORT: u16 = 8001;
 const PORT_SCAN_SIZE: u16 = 100;
 const HEALTH_CHECK_TIMEOUT_SECS: u64 = 30;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 250;
+const BACKEND_INGEST_TIMEOUT_SECS: u64 = 7200;
 const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const SETUP_CONFIG_FILE: &str = "setup.json";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
@@ -396,6 +397,64 @@ fn backend_base_url(state: State<BackendState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn backend_ingest(
+    state: State<'_, BackendState>,
+    export_dir: String,
+    mode: String,
+    reindex: bool,
+) -> Result<serde_json::Value, String> {
+    let export_dir = export_dir.trim().to_string();
+    if export_dir.is_empty() {
+        return Err("export_dir must not be empty".to_string());
+    }
+
+    let mode = mode.trim().to_ascii_lowercase();
+    if mode != "full" && mode != "delta" {
+        return Err("mode must be either `full` or `delta`".to_string());
+    }
+
+    let port = {
+        let runtime_guard = state.runtime.lock().map_err(|_| "Lock error".to_string())?;
+        runtime_guard.port
+    };
+    let url = format!("http://127.0.0.1:{port}/ingest");
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let payload = serde_json::json!({
+            "export_dir": export_dir,
+            "mode": mode,
+            "reindex": reindex,
+        });
+        let payload_raw = serde_json::to_string(&payload)
+            .map_err(|err| format!("Failed to serialize ingest payload: {err}"))?;
+
+        let response = ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .timeout(Duration::from_secs(BACKEND_INGEST_TIMEOUT_SECS))
+            .send_string(&payload_raw);
+
+        match response {
+            Ok(resp) => {
+                let body = resp
+                    .into_string()
+                    .map_err(|err| format!("Failed to read ingest response body: {err}"))?;
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .map_err(|err| format!("Failed to parse ingest response JSON: {err}"))
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp
+                    .into_string()
+                    .unwrap_or_else(|_| "(failed to read response body)".to_string());
+                Err(format!("HTTP {status}: {body}"))
+            }
+            Err(err) => Err(format!("Backend ingest request failed: {err}")),
+        }
+    })
+    .await
+    .map_err(|err| format!("Ingest task failed: {err}"))?
+}
+
+#[tauri::command]
 fn setup_load_config(app: tauri::AppHandle) -> Result<SetupConfig, String> {
     let path = setup_config_path(&app)?;
     if !path.exists() {
@@ -646,6 +705,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             backend_base_url,
+            backend_ingest,
             setup_load_config,
             setup_save_config,
             setup_save_notes_export_dir,

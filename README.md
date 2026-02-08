@@ -57,6 +57,25 @@ ollama pull mxbai-embed-large
 ollama pull llama3.1:8b
 ```
 
+### Environment Variables
+
+Backend/API settings (read from `.env`):
+
+- `OLLAMA_BASE_URL`
+- `OLLAMA_EMBEDDING_MODEL`
+- `OLLAMA_CHAT_MODEL`
+- `NOTES_EXPORT_DIR`
+- `AUTO_INGEST_ON_STARTUP`
+- `CHROMA_DB_PATH`
+- `BM25_INDEX_PATH`
+
+Desktop shell overrides (for `cargo tauri dev`):
+
+- `BACKEND_CMD`
+- `BACKEND_ARGS`
+- `BACKEND_PORT`
+- `BACKEND_WORKDIR`
+
 ### 4. Export Apple Notes
 
 ```python
@@ -85,13 +104,15 @@ ingest notes and update the Chroma DB on startup.
 
 ```bash
 curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" \
-  -d '{"export_dir": "/path/to/exported_notes"}'
+  -d '{"export_dir": "/path/to/exported_notes", "mode": "delta"}'
 
 curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
   -d '{"query": "What are the key points from my notes?"}'
 
 curl -X POST http://localhost:8000/search -H "Content-Type: application/json" \
   -d '{"query": "Estes Park", "top_k": 5}'
+
+curl http://localhost:8000/stats
 ```
 
 ## Usage
@@ -233,7 +254,7 @@ If you change embedding models, reindex the vector store (collection dimensions 
 ```bash
 curl -X POST http://localhost:8001/ingest \
   -H "Content-Type: application/json" \
-  -d '{"export_dir": "/path/to/exported_notes", "reindex": true}'
+  -d '{"export_dir": "/path/to/exported_notes", "mode": "full"}'
 ```
 
 ### Test Strategy

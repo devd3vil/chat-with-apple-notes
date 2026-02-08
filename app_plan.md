@@ -428,15 +428,15 @@ Return:
 
 ### Backend
 
-- [ ] Add `mode=full|delta` to `/ingest`
-- [ ] Add manifest storage and delete handling
-- [ ] Add schema versioning for manifest/index metadata
-- [ ] Add migration + backup/rollback flow
-- [ ] Ensure `/stats` returns delta summary + last sync
-- [ ] Ensure stable citations (chunk_id + source metadata)
+- [x] Add `mode=full|delta` to `/ingest`
+- [x] Add manifest storage and delete handling
+- [x] Add schema versioning for manifest/index metadata
+- [x] Add migration + backup/rollback flow
+- [x] Ensure `/stats` returns delta summary + last sync
+- [x] Ensure stable citations (chunk_id + source metadata)
 - [ ] Package backend as executable (PyInstaller/Nuitka)
 - [ ] Ensure sidecar startup does not require Python on user machine
-- [ ] Document env vars for app control
+- [x] Document env vars for app control
 
 ### Release / QA
 

@@ -2,8 +2,9 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devPath": "../ui/index.html",
-    "distDir": "../ui"
+    "devPath": "../ui",
+    "distDir": "../ui",
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "Notes RAG",

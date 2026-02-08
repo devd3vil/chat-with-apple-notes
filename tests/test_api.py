@@ -62,15 +62,23 @@ def test_ingest_and_stats(tmp_path: Path) -> None:
     response = client.post("/ingest", json={"export_dir": str(export_dir)})
     assert response.status_code == 200
     payload = response.json()
+    assert payload["mode"] == "delta"
     assert payload["changed_notes"] == 2
     assert payload["removed_notes"] == 0
     assert payload["chunks_indexed"] > 0
+    assert payload["delta_summary"]["added_notes"] == 2
+    assert payload["delta_summary"]["updated_notes"] == 0
 
     stats = client.get("/stats")
     assert stats.status_code == 200
     stats_payload = stats.json()
     assert stats_payload["chunks"] > 0
+    assert stats_payload["notes_indexed"] == 2
     assert stats_payload["last_sync_time"] is not None
+    assert stats_payload["last_ingest"]["mode"] == "delta"
+    assert stats_payload["delta_summary"]["added_notes"] == 2
+    assert stats_payload["configured_models"]["embed_model"] == "nomic-embed-text"
+    assert stats_payload["store_size_bytes"] >= 0
 
 
 def test_ask_returns_answer(tmp_path: Path) -> None:
@@ -108,6 +116,8 @@ def test_search_returns_results(tmp_path: Path) -> None:
     assert payload["top_k"] == 3
     assert len(payload["results"]) >= 1
     assert payload["results"][0]["chunk_id"].startswith("p1_")
+    assert payload["results"][0]["note_id"] == "p1"
+    assert payload["results"][0]["source"] == {"note_id": "p1"}
 
 
 def test_health_endpoint(tmp_path: Path) -> None:
@@ -120,6 +130,20 @@ def test_health_endpoint(tmp_path: Path) -> None:
     assert isinstance(payload["embedder"], bool)
     assert isinstance(payload["llm"], bool)
     assert isinstance(payload["store"], bool)
+
+
+def test_ingest_cors_preflight(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    response = client.options(
+        "/ingest",
+        headers={
+            "Origin": "tauri://localhost",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "*"
 
 
 def test_auto_ingest_on_startup(tmp_path: Path) -> None:
@@ -157,4 +181,27 @@ def test_reindex_clears_store(tmp_path: Path) -> None:
 
     reindex = client.post("/ingest", json={"export_dir": str(export_dir), "reindex": True})
     assert reindex.status_code == 200
+    assert reindex.json()["mode"] == "full"
     assert store.size() == 0
+
+
+def test_ingest_mode_full_then_delta(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    note_file = export_dir / "20240115 Note One [p1].html"
+    note_file.write_text("<html><body>Hello world</body></html>", encoding="utf-8")
+
+    client = _make_client(tmp_path)
+
+    full = client.post("/ingest", json={"export_dir": str(export_dir), "mode": "full"})
+    assert full.status_code == 200
+    full_payload = full.json()
+    assert full_payload["mode"] == "full"
+    assert full_payload["delta_summary"]["added_notes"] == 1
+
+    delta = client.post("/ingest", json={"export_dir": str(export_dir), "mode": "delta"})
+    assert delta.status_code == 200
+    delta_payload = delta.json()
+    assert delta_payload["mode"] == "delta"
+    assert delta_payload["changed_notes"] == 0
+    assert delta_payload["delta_summary"]["unchanged_notes"] == 1

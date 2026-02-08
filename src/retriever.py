@@ -16,6 +16,10 @@ import re
 import numpy as np
 
 
+def _note_id_from_chunk_id(chunk_id: str) -> str:
+    return chunk_id.split("_", 1)[0] if "_" in chunk_id else chunk_id
+
+
 class Retriever:
     """Retrieves top-k relevant chunks from vector store."""
     
@@ -57,10 +61,13 @@ class Retriever:
             # Convert to Citation objects
             citations: list[Citation] = []
             for chunk_id, chunk_text, score in search_results:
+                note_id = _note_id_from_chunk_id(chunk_id)
                 citation = Citation(
                     chunk_id=chunk_id,
+                    note_id=note_id,
                     text=chunk_text,
                     score=score,
+                    source={"note_id": note_id},
                 )
                 citations.append(citation)
             
@@ -357,22 +364,20 @@ class HybridRetriever:
         scored = data["scored"]
         text_map = data["text_map"]
 
-        def _note_id(cid: str) -> str:
-            return cid.split("_", 1)[0]
-
         candidates: list[Candidate] = []
         for chunk_id, score in scored[:topn]:
+            note_id = _note_id_from_chunk_id(chunk_id)
             candidates.append(
                 Candidate(
                     chunk_id=chunk_id,
                     text=text_map.get(chunk_id, ""),
-                    metadata={"note_id": _note_id(chunk_id)},
+                    metadata={"note_id": note_id},
                     rrf_score=score,
                 )
             )
 
         data["hybrid_top10"] = [
-            {"chunk_id": cid, "rrf_score": score, "note_id": _note_id(cid)}
+            {"chunk_id": cid, "rrf_score": score, "note_id": _note_id_from_chunk_id(cid)}
             for cid, score in scored[:10]
         ]
         data["max_rrf"] = max((s for _, s in scored), default=0.0)
@@ -452,11 +457,14 @@ class HybridRetriever:
             scored_item = scored_map.get(cand.chunk_id)
             total = scored_item.total if scored_item else 0.0
             normalized = min(1.0, max(0.0, total / max_total))
+            note_id = _note_id_from_chunk_id(cand.chunk_id)
             citations.append(
                 Citation(
                     chunk_id=cand.chunk_id,
+                    note_id=note_id,
                     text=cand.text,
                     score=normalized,
+                    source={"note_id": note_id},
                 )
             )
 
@@ -515,25 +523,25 @@ class HybridRetriever:
             citations: list[Citation] = []
             for chunk_id, score in scored[:top_k]:
                 normalized = score / max_score if max_score > 0 else 0.0
+                note_id = _note_id_from_chunk_id(chunk_id)
                 citations.append(
                     Citation(
                         chunk_id=chunk_id,
+                        note_id=note_id,
                         text=text_map.get(chunk_id, ""),
                         score=normalized,
+                        source={"note_id": note_id},
                     )
                 )
             if not include_trace:
                 return citations
-
-            def _note_id(cid: str) -> str:
-                return cid.split("_", 1)[0]
 
             bm25_top = [
                 {
                     "chunk_id": cid,
                     "rank_lex": idx + 1,
                     "lex_score": score,
-                    "note_id": _note_id(cid),
+                    "note_id": _note_id_from_chunk_id(cid),
                 }
                 for idx, (cid, score, _text) in enumerate(lex_results[:10])
             ]
@@ -542,7 +550,7 @@ class HybridRetriever:
                     "chunk_id": cid,
                     "rank_vec": idx + 1,
                     "vec_score": score,
-                    "note_id": _note_id(cid),
+                    "note_id": _note_id_from_chunk_id(cid),
                 }
                 for idx, (cid, _text, score) in enumerate(vec_results[:10])
             ]

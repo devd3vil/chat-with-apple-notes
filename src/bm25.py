@@ -14,6 +14,7 @@ from rank_bm25 import BM25Okapi
 from src.models import Chunk
 
 _PUNCT_RE = re.compile(r"[^\w\s:-]")
+BM25_SCHEMA_VERSION = 2
 _STOPWORDS = {
     "the",
     "a",
@@ -55,6 +56,7 @@ class BM25Index:
 
     def __init__(self, path: Path):
         self.path = path
+        self.schema_version = BM25_SCHEMA_VERSION
         self.chunk_ids: list[str] = []
         self.documents: list[str] = []
         self.note_ids: list[str] = []
@@ -125,6 +127,7 @@ class BM25Index:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
+            "schema_version": self.schema_version,
             "chunk_ids": self.chunk_ids,
             "documents": self.documents,
             "note_ids": self.note_ids,
@@ -136,8 +139,12 @@ class BM25Index:
         if not self.path.exists():
             return
         data = json.loads(self.path.read_text(encoding="utf-8"))
+        schema_version = int(data.get("schema_version") or 1)
         self.chunk_ids = data.get("chunk_ids", [])
         self.documents = data.get("documents", [])
         self.note_ids = data.get("note_ids", [])
         self.tokenized_corpus = data.get("tokenized_corpus", [])
+        self.schema_version = BM25_SCHEMA_VERSION
         self._rebuild()
+        if schema_version < self.schema_version:
+            self.save()
