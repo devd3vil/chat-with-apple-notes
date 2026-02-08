@@ -903,6 +903,7 @@ async function startExportFlow() {
     await cleanupExportAfterAbort();
     const exportPayload = {
       exportFolderPath: folder,
+      mode: "full",
     };
     if (Number.isInteger(ONBOARDING_EXPORT_LIMIT) && ONBOARDING_EXPORT_LIMIT > 0) {
       exportPayload.maxFiles = ONBOARDING_EXPORT_LIMIT;
@@ -1264,13 +1265,9 @@ async function startSyncFlow() {
   }
 
   try {
-    // Keep sync export deterministic by removing stale files before re-export.
-    await invoke("delete_export_subfolder", {
-      exportFolderPath: folderPath,
-    }).catch(() => null);
-
     const exportStart = await invoke("start_export_job", {
       exportFolderPath: folderPath,
+      mode: "delta",
     });
     state.sync.exportJobId = exportStart?.job_id || null;
 

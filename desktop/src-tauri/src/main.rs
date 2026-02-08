@@ -24,6 +24,7 @@ const APP_OWNED_EXPORT_SUBDIR: &str = "NotesLensExport";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 const DEFAULT_CHAT_MODEL: &str = "neural-chat";
 const DEFAULT_MODEL_PULL_TIMEOUT_SECS: u64 = 1800;
+const EXPORT_STALL_TIMEOUT_SECS: u64 = 60;
 
 struct BackendRuntime {
     child: Option<Child>,
@@ -686,11 +687,13 @@ fn app_owned_export_subfolder(base: &str) -> Result<PathBuf, String> {
 fn build_export_script_args(
     script_path: &Path,
     target_dir: &Path,
+    mode: &str,
     max_files: Option<usize>,
 ) -> Vec<String> {
     let mut args = vec![
         script_path.to_string_lossy().to_string(),
         target_dir.to_string_lossy().to_string(),
+        mode.to_string(),
     ];
     if let Some(limit) = max_files.filter(|value| *value > 0) {
         args.push(limit.to_string());
@@ -751,12 +754,25 @@ fn update_snapshot_from_progress_line(
     if type_name == "complete" {
         let total = snapshot.total.unwrap_or(snapshot.current);
         snapshot.current = total;
-        snapshot.message = format!("Export complete. Exported {} of {} files.", total, total);
+        if snapshot.message.contains("Syncing") || snapshot.message.contains("Delta") {
+            snapshot.message = format!("Delta sync complete. Processed {} notes.", total);
+        } else {
+            snapshot.message = format!("Export complete. Exported {} of {} files.", total, total);
+        }
         return Some("Export complete.".to_string());
     } else if let Some(total) = snapshot.total {
-        snapshot.message = format!("Pulling notes... {} of {} files", snapshot.current, total);
+        if snapshot.message.contains("Syncing") || snapshot.message.contains("Delta") {
+            snapshot.message =
+                format!("Syncing changes... {} of {} notes", snapshot.current, total);
+        } else {
+            snapshot.message = format!("Pulling notes... {} of {} files", snapshot.current, total);
+        }
     } else {
-        snapshot.message = format!("Pulling notes... {} files", snapshot.current);
+        if snapshot.message.contains("Syncing") || snapshot.message.contains("Delta") {
+            snapshot.message = format!("Syncing changes... {} notes", snapshot.current);
+        } else {
+            snapshot.message = format!("Pulling notes... {} files", snapshot.current);
+        }
     }
 
     if let Some(note) = note_name {
@@ -959,8 +975,17 @@ fn save_chat_threads(
 fn start_export_job(
     export_state: State<ExportJobState>,
     export_folder_path: String,
+    mode: Option<String>,
     max_files: Option<usize>,
 ) -> Result<ExportJobSnapshot, String> {
+    let mode = mode
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "full".to_string());
+    if mode != "full" && mode != "delta" {
+        return Err("mode must be either `full` or `delta`".to_string());
+    }
+
     let target_dir = app_owned_export_subfolder(&export_folder_path)?;
     fs::create_dir_all(&target_dir)
         .map_err(|err| format!("Failed to create export folder {target_dir:?}: {err}"))?;
@@ -993,7 +1018,11 @@ fn start_export_job(
         phase: "export".to_string(),
         current: 0,
         total: max_files.filter(|value| *value > 0),
-        message: "Export queued.".to_string(),
+        message: if mode == "delta" {
+            "Delta sync queued.".to_string()
+        } else {
+            "Export queued.".to_string()
+        },
         started_at: now_timestamp_string(),
         finished_at: None,
         target_dir: target_dir.to_string_lossy().to_string(),
@@ -1026,7 +1055,7 @@ fn start_export_job(
             return;
         }
 
-        let args = build_export_script_args(&script_path, &target_dir_for_thread, max_files);
+        let args = build_export_script_args(&script_path, &target_dir_for_thread, &mode, max_files);
         let mut command = Command::new("osascript");
         command
             .args(args)
@@ -1065,7 +1094,11 @@ fn start_export_job(
             if let Some(s) = runtime_guard.snapshot.as_mut() {
                 if s.job_id == job_id_for_thread {
                     s.status = "running".to_string();
-                    s.message = "Pulling notes...".to_string();
+                    s.message = if mode == "delta" {
+                        "Syncing changed notes...".to_string()
+                    } else {
+                        "Pulling notes...".to_string()
+                    };
                     s.logs = push_log_line(&s.logs, "Starting export...", 10);
                 }
             }
@@ -1073,7 +1106,10 @@ fn start_export_job(
 
         let mut seen_files: HashSet<String> = HashSet::new();
         let mut last_fallback_scan = Instant::now();
+        let mut last_progress_tick = Instant::now();
+        let mut last_seen_current = 0usize;
         loop {
+            let mut saw_progress = false;
             while let Ok((is_stderr, line)) = line_receiver.try_recv() {
                 if let Ok(mut runtime_guard) = runtime.lock() {
                     if let Some(snapshot) = runtime_guard.snapshot.as_mut() {
@@ -1088,12 +1124,16 @@ fn start_export_job(
                             let parsed_log = update_snapshot_from_progress_line(snapshot, &line);
                             if let Some(entry) = parsed_log {
                                 snapshot.logs = push_log_line(&snapshot.logs, &entry, 10);
+                                saw_progress = true;
                             } else {
                                 snapshot.logs = push_log_line(&snapshot.logs, &line, 10);
                             }
                         }
                     }
                 }
+            }
+            if saw_progress {
+                last_progress_tick = Instant::now();
             }
 
             let cancel_requested = runtime
@@ -1194,6 +1234,10 @@ fn start_export_job(
                             if let Some(s) = runtime_guard.snapshot.as_mut() {
                                 if s.job_id == job_id_for_thread {
                                     s.current = s.current.max(count);
+                                    if s.current > last_seen_current {
+                                        last_seen_current = s.current;
+                                        last_progress_tick = Instant::now();
+                                    }
 
                                     for file_path in &files {
                                         let label = format_export_log_label(
@@ -1206,17 +1250,76 @@ fn start_export_job(
                                     }
 
                                     if let Some(total) = s.total {
-                                        s.message = format!(
-                                            "Pulling notes... {} of {} files",
-                                            s.current, total
-                                        );
+                                        s.message = if mode == "delta" {
+                                            format!(
+                                                "Syncing changes... {} of {} notes",
+                                                s.current, total
+                                            )
+                                        } else {
+                                            format!(
+                                                "Pulling notes... {} of {} files",
+                                                s.current, total
+                                            )
+                                        };
                                     } else {
-                                        s.message = format!("Pulling notes... {} files", s.current);
+                                        s.message = if mode == "delta" {
+                                            format!("Syncing changes... {} notes", s.current)
+                                        } else {
+                                            format!("Pulling notes... {} files", s.current)
+                                        };
                                     }
                                 }
                             }
                         }
                         last_fallback_scan = Instant::now();
+                    }
+
+                    if last_progress_tick.elapsed()
+                        >= Duration::from_secs(EXPORT_STALL_TIMEOUT_SECS)
+                    {
+                        let _ = child.kill();
+                        if let Ok(mut runtime_guard) = runtime.lock() {
+                            runtime_guard.process_pid = None;
+                            if let Some(s) = runtime_guard.snapshot.as_mut() {
+                                if s.job_id == job_id_for_thread {
+                                    s.finished_at = Some(now_timestamp_string());
+                                    if let Some(total) = s.total {
+                                        if s.current >= total && total > 0 {
+                                            s.status = "completed".to_string();
+                                            s.message = if mode == "delta" {
+                                                format!(
+                                                    "Delta sync complete. Processed {} notes.",
+                                                    total
+                                                )
+                                            } else {
+                                                format!(
+                                                    "Export complete. Exported {} of {} files.",
+                                                    total, total
+                                                )
+                                            };
+                                            s.logs = push_log_line(
+                                                &s.logs,
+                                                "Exporter stalled after reaching total; completing job.",
+                                                10,
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    s.status = "failed".to_string();
+                                    s.message = "Export stalled.".to_string();
+                                    s.error = Some(format!(
+                                        "No progress received for {} seconds.",
+                                        EXPORT_STALL_TIMEOUT_SECS
+                                    ));
+                                    s.logs = push_log_line(
+                                        &s.logs,
+                                        "Exporter stalled and was terminated.",
+                                        10,
+                                    );
+                                }
+                            }
+                        }
+                        break;
                     }
                     thread::sleep(Duration::from_millis(220));
                 }
@@ -1263,10 +1366,16 @@ fn cancel_export_job(
 
     guard.cancel_requested = true;
     if let Some(pid) = guard.process_pid {
-        let _ = Command::new("kill")
+        let term_status = Command::new("kill")
             .arg("-TERM")
             .arg(pid.to_string())
             .status();
+        if term_status.map(|status| !status.success()).unwrap_or(true) {
+            let _ = Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
     }
 
     if let Some(snapshot) = guard.snapshot.as_mut() {
@@ -1697,11 +1806,13 @@ mod tests {
         let args = build_export_script_args(
             Path::new("/tmp/export_notes.applescript"),
             Path::new("/tmp/NotesLensExport"),
+            "full",
             None,
         );
-        assert_eq!(args.len(), 2);
+        assert_eq!(args.len(), 3);
         assert_eq!(args[0], "/tmp/export_notes.applescript");
         assert_eq!(args[1], "/tmp/NotesLensExport");
+        assert_eq!(args[2], "full");
     }
 
     #[test]
@@ -1709,10 +1820,12 @@ mod tests {
         let args = build_export_script_args(
             Path::new("/tmp/export_notes.applescript"),
             Path::new("/tmp/NotesLensExport"),
+            "delta",
             Some(20),
         );
-        assert_eq!(args.len(), 3);
-        assert_eq!(args[2], "20");
+        assert_eq!(args.len(), 4);
+        assert_eq!(args[2], "delta");
+        assert_eq!(args[3], "20");
     }
 
     #[test]
