@@ -1,11 +1,13 @@
 """
-FastAPI application for Apple Notes RAG.
+FastAPI application for Apple Notes Lens.
 """
 
 import logging
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,6 +71,36 @@ class SearchResponse(BaseModel):
     results: list[dict]
 
 
+class IngestJobStatus(BaseModel):
+    """Public response model for ingest job state."""
+
+    job_id: str
+    status: Literal[
+        "queued",
+        "running",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+    phase: Literal["preparing", "scanning", "indexing", "finalizing"]
+    current: int = 0
+    total: Optional[int] = None
+    message: str = ""
+    started_at: str
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+    result: Optional[dict] = None
+
+
+class IngestCancelledError(Exception):
+    """Raised when an ingest job is cancelled."""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _resolve_export_dir(request_dir: Optional[str], settings: Settings) -> Path:
     if request_dir:
         return Path(request_dir)
@@ -105,6 +137,30 @@ def _resolve_ingest_mode(request: IngestRequest) -> Literal["full", "delta"]:
     return "delta"
 
 
+def _reset_index_state(
+    store: VectorStore,
+    sync_state: SyncState,
+    bm25: Optional[BM25Index],
+) -> dict[str, int]:
+    if isinstance(store, ChromaStore):
+        store.reset_collection()
+    else:
+        store.clear()
+
+    if bm25:
+        bm25.reset()
+        bm25.save()
+
+    sync_state.note_metadata = {}
+    sync_state.last_sync_time = None
+    sync_state.save()
+
+    return {
+        "chunks": store.size(),
+        "notes_indexed": len(sync_state.note_metadata),
+    }
+
+
 def _run_ingest(
     export_dir: Path,
     embedder: Embedder,
@@ -113,33 +169,65 @@ def _run_ingest(
     sync_state: SyncState,
     mode: Literal["full", "delta"],
     bm25: BM25Index | None = None,
+    progress_callback: Optional[Callable[[str, int, Optional[int], str], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> dict:
+    def report(phase: str, current: int, total: Optional[int], message: str) -> None:
+        if progress_callback:
+            progress_callback(phase, current, total, message)
+
+    def ensure_not_cancelled() -> None:
+        if should_cancel and should_cancel():
+            raise IngestCancelledError("Ingest cancelled")
+
+    report("scanning", 0, None, "Scanning export folder...")
     changed_notes, removed_note_ids, delta_summary = incremental_sync_detailed(
         export_dir,
         sync_state,
     )
+    report(
+        "scanning",
+        delta_summary.get("scanned_notes", 0),
+        delta_summary.get("scanned_notes", 0),
+        f"Scanned {delta_summary.get('scanned_notes', 0)} notes.",
+    )
+
+    ensure_not_cancelled()
 
     for note_id in removed_note_ids:
+        ensure_not_cancelled()
         store.delete_note(note_id)
         if bm25:
             bm25.remove_note(note_id)
 
+    total_changed = len(changed_notes)
     total_chunks = 0
-    for note in changed_notes:
+    report("indexing", 0, total_changed, "Indexing changed notes...")
+
+    for idx, note in enumerate(changed_notes, start=1):
+        ensure_not_cancelled()
         if bm25:
             bm25.remove_note(note.id)
+
         text = extract_text_from_html(note.body)
         chunks = chunker.chunk_text(text, note.id)
         for chunk in chunks:
+            ensure_not_cancelled()
             chunk.embedding = embedder.embed(chunk.text)
+
         if chunks:
             store.add_chunks(chunks)
             total_chunks += len(chunks)
             if bm25:
                 bm25.add_documents(chunks)
 
+        report("indexing", idx, total_changed, f"Indexed {idx}/{total_changed} notes.")
+
+    report("finalizing", total_changed, total_changed, "Finalizing index state...")
     if bm25:
         bm25.save()
+
+    ensure_not_cancelled()
 
     return {
         "mode": mode,
@@ -176,7 +264,6 @@ def create_app(
         model_name=settings.ollama_chat_model,
         base_url=settings.ollama_base_url,
     )
-    bm25 = None
     if bm25_index is None:
         bm25 = BM25Index(settings.bm25_index_path)
         bm25.load()
@@ -211,7 +298,7 @@ def create_app(
     )
     sync_state = sync_state or SyncState()
 
-    app = FastAPI(title="Apple Notes RAG", version="0.1.0")
+    app = FastAPI(title="Apple Notes Lens", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -230,6 +317,24 @@ def create_app(
     app.state.bm25 = bm25
     app.state.last_ingest_summary = None
 
+    job_lock = threading.Lock()
+    ingest_jobs: dict[str, dict] = {}
+    ingest_cancel_events: dict[str, threading.Event] = {}
+
+    def get_job_or_404(job_id: str) -> dict:
+        with job_lock:
+            job = ingest_jobs.get(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Ingest job not found")
+            return dict(job)
+
+    def update_job(job_id: str, **changes: object) -> None:
+        with job_lock:
+            existing = ingest_jobs.get(job_id)
+            if not existing:
+                return
+            existing.update(changes)
+
     @app.exception_handler(StarletteHTTPException)
     def http_exception_handler(
         request: Request,
@@ -242,6 +347,10 @@ def create_app(
                     "detail": "Endpoint not found. Are you running the latest app?",
                     "available_endpoints": [
                         "/ingest",
+                        "/jobs/ingest",
+                        "/jobs/{job_id}",
+                        "/jobs/{job_id}/cancel",
+                        "/reset_notes_index",
                         "/ask",
                         "/search",
                         "/health",
@@ -274,6 +383,7 @@ def create_app(
         if not settings.rerank_warmup_enabled:
             return
         if isinstance(retriever, HybridRetriever):
+
             def _run_warmup() -> None:
                 try:
                     warmed = retriever.warmup_reranker()
@@ -296,15 +406,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="export_dir must be a directory")
 
         if mode == "full":
-            if isinstance(store, ChromaStore):
-                store.reset_collection()
-            else:
-                store.clear()
-            if bm25:
-                bm25.reset()
-            sync_state.note_metadata = {}
-            sync_state.last_sync_time = None
-            sync_state.save()
+            _reset_index_state(store=store, sync_state=sync_state, bm25=bm25)
 
         summary = _run_ingest(
             export_dir=export_dir,
@@ -317,6 +419,128 @@ def create_app(
         )
         app.state.last_ingest_summary = summary
         return summary
+
+    @app.post("/jobs/ingest")
+    def start_ingest_job(request: IngestRequest) -> dict:
+        export_dir = _resolve_export_dir(request.export_dir, settings)
+        mode = _resolve_ingest_mode(request)
+
+        if not export_dir.exists() or not export_dir.is_dir():
+            raise HTTPException(status_code=400, detail="export_dir must be a directory")
+
+        job_id = uuid4().hex
+        started_at = _now_iso()
+        cancel_event = threading.Event()
+
+        with job_lock:
+            ingest_jobs[job_id] = IngestJobStatus(
+                job_id=job_id,
+                status="queued",
+                phase="preparing",
+                current=0,
+                total=None,
+                message="Job queued.",
+                started_at=started_at,
+                finished_at=None,
+                error=None,
+                result=None,
+            ).model_dump()
+            ingest_cancel_events[job_id] = cancel_event
+
+        def run_job() -> None:
+            update_job(job_id, status="running", phase="preparing", message="Preparing ingest...")
+            try:
+                if mode == "full":
+                    _reset_index_state(store=store, sync_state=sync_state, bm25=bm25)
+
+                def report(phase: str, current: int, total: Optional[int], message: str) -> None:
+                    update_job(
+                        job_id,
+                        status="running",
+                        phase=phase,
+                        current=current,
+                        total=total,
+                        message=message,
+                    )
+
+                summary = _run_ingest(
+                    export_dir=export_dir,
+                    embedder=embedder,
+                    store=store,
+                    chunker=chunker,
+                    sync_state=sync_state,
+                    mode=mode,
+                    bm25=bm25,
+                    progress_callback=report,
+                    should_cancel=cancel_event.is_set,
+                )
+                app.state.last_ingest_summary = summary
+                update_job(
+                    job_id,
+                    status="completed",
+                    phase="finalizing",
+                    current=summary.get("changed_notes", 0),
+                    total=summary.get("changed_notes", 0),
+                    message="Ingest completed.",
+                    finished_at=_now_iso(),
+                    result=summary,
+                    error=None,
+                )
+            except IngestCancelledError:
+                update_job(
+                    job_id,
+                    status="cancelled",
+                    phase="finalizing",
+                    message="Ingest cancelled.",
+                    finished_at=_now_iso(),
+                    error=None,
+                )
+            except Exception as err:
+                update_job(
+                    job_id,
+                    status="failed",
+                    phase="finalizing",
+                    message="Ingest failed.",
+                    finished_at=_now_iso(),
+                    error=str(err),
+                )
+
+        thread = threading.Thread(target=run_job, name=f"ingest-job-{job_id[:8]}", daemon=True)
+        thread.start()
+
+        return {"job_id": job_id}
+
+    @app.get("/jobs/{job_id}")
+    def get_ingest_job(job_id: str) -> dict:
+        return get_job_or_404(job_id)
+
+    @app.post("/jobs/{job_id}/cancel")
+    def cancel_ingest_job(job_id: str) -> dict:
+        with job_lock:
+            job = ingest_jobs.get(job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Ingest job not found")
+
+            status = job.get("status")
+            if status in {"completed", "failed", "cancelled"}:
+                return {"job_id": job_id, "status": status}
+
+            cancel_event = ingest_cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            job["status"] = "cancelling"
+            job["message"] = "Cancellation requested."
+            return {"job_id": job_id, "status": "cancelling"}
+
+    @app.post("/reset_notes_index")
+    def reset_notes_index() -> dict:
+        summary = _reset_index_state(store=store, sync_state=sync_state, bm25=bm25)
+        app.state.last_ingest_summary = None
+        return {
+            "status": "ok",
+            "message": "Notes index reset completed.",
+            "summary": summary,
+        }
 
     @app.post("/ask", response_model=QAResult)
     def ask(request: AskRequest) -> QAResult:

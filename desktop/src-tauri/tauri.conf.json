@@ -7,13 +7,13 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "Notes RAG",
+    "productName": "Apple Notes Lens",
     "version": "0.1.0"
   },
   "tauri": {
     "windows": [
       {
-        "title": "Notes RAG",
+        "title": "Apple Notes Lens",
         "width": 900,
         "height": 700
       }

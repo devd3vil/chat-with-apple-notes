@@ -1,64 +1,118 @@
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8001";
-const DEFAULT_SETUP_CONFIG = {
-  embed_model: "nomic-embed-text",
-  chat_model: "neural-chat",
-  notes_export_dir: null,
-  wizard_completed: false,
+const APP_OWNED_EXPORT_SUBDIR = "NotesLensExport";
+const ONBOARDING_EXPORT_LIMIT = null;
+const ASK_TIMEOUT_MS = 180000;
+const SAVE_THREADS_TIMEOUT_MS = 5000;
+const DEFAULT_CONFIG = {
+  hasCompletedOnboarding: false,
+  exportFolderPath: null,
+  lastSyncedAt: null,
+  embedModel: "nomic-embed-text",
+  chatModel: "neural-chat",
 };
 
-const statusText = document.getElementById("status-text");
-const statusDot = document.getElementById("status-dot");
-const backendUrlText = document.getElementById("backend-url");
-const healthOutput = document.getElementById("health-output");
-const refreshHealthBtn = document.getElementById("refresh");
-
-const ollamaSummary = document.getElementById("ollama-summary");
-const ollamaOutput = document.getElementById("ollama-output");
-const wizardOutput = document.getElementById("wizard-output");
-const checkOllamaBtn = document.getElementById("check-ollama");
-const installOllamaBtn = document.getElementById("install-ollama");
-const startOllamaBtn = document.getElementById("start-ollama");
-const saveSetupBtn = document.getElementById("save-setup");
-const pullModelsBtn = document.getElementById("pull-models");
-const retryFailedBtn = document.getElementById("retry-failed");
-const resumePullBtn = document.getElementById("resume-pull");
-const embedModelInput = document.getElementById("embed-model");
-const chatModelInput = document.getElementById("chat-model");
-
-const exportFolderPath = document.getElementById("export-folder-path");
-const pickFolderBtn = document.getElementById("pick-folder");
-const validateFolderBtn = document.getElementById("validate-folder");
-const ingestFullBtn = document.getElementById("ingest-full");
-const syncNowBtn = document.getElementById("sync-now");
-const ingestOutput = document.getElementById("ingest-output");
-
-const searchQueryInput = document.getElementById("search-query");
-const searchTopKInput = document.getElementById("search-top-k");
-const runSearchBtn = document.getElementById("run-search");
-const searchResults = document.getElementById("search-results");
-
-const askQueryInput = document.getElementById("ask-query");
-const runAskBtn = document.getElementById("run-ask");
-const askAnswer = document.getElementById("ask-answer");
-const askConfidence = document.getElementById("ask-confidence");
-const askCitations = document.getElementById("ask-citations");
-
-const refreshStatsBtn = document.getElementById("refresh-stats");
-const statsOutput = document.getElementById("stats-output");
-
-let healthUrl = `${DEFAULT_BACKEND_URL}/health`;
-let baseUrl = DEFAULT_BACKEND_URL;
-let setupState = { ...DEFAULT_SETUP_CONFIG };
-let shellAvailable = true;
-let healthPollTimer = null;
-let ingestInProgress = false;
-
-const pullState = {
-  inProgress: false,
-  completed: [],
-  failed: [],
-  pending: [],
+const STEP_META = {
+  1: { key: "welcome", title: "Welcome" },
+  2: { key: "folder", title: "Choose Export Folder" },
+  3: { key: "export", title: "Export Progress" },
+  4: { key: "setup", title: "Local AI Setup" },
 };
+
+const dom = {
+  onboardingShell: document.getElementById("onboarding-shell"),
+  mainShell: document.getElementById("main-shell"),
+
+  stepLabel: document.getElementById("step-label"),
+  stepTitle: document.getElementById("step-title"),
+  stepDots: [1, 2, 3, 4].map((idx) => document.getElementById(`step-dot-${idx}`)),
+  screens: {
+    welcome: document.getElementById("screen-welcome"),
+    folder: document.getElementById("screen-folder"),
+    export: document.getElementById("screen-export"),
+    setup: document.getElementById("screen-setup"),
+  },
+
+  startInstallBtn: document.getElementById("start-install"),
+  learnMoreBtn: document.getElementById("learn-more"),
+  learnMoreCopy: document.getElementById("learn-more-copy"),
+
+  chooseFolderBtn: document.getElementById("choose-folder"),
+  folderPath: document.getElementById("folder-path"),
+  exportNotesBtn: document.getElementById("export-notes"),
+  backWelcomeBtn: document.getElementById("back-welcome"),
+
+  exportStats: document.getElementById("export-stats"),
+  exportProgressBar: document.getElementById("export-progress-bar"),
+  exportLogLines: document.getElementById("export-log-lines"),
+  exportDetails: document.getElementById("export-details"),
+  abortExportBtn: document.getElementById("abort-export"),
+  nextSetupBtn: document.getElementById("next-setup"),
+
+  embedModelInput: document.getElementById("embed-model"),
+  chatModelInput: document.getElementById("chat-model"),
+  backExportBtn: document.getElementById("back-export"),
+  setupNowBtn: document.getElementById("setup-now"),
+  completeSetupBtn: document.getElementById("complete-setup"),
+  setupProgressWrap: document.getElementById("setup-progress-wrap"),
+  setupStage: document.getElementById("setup-stage"),
+  setupProgressBar: document.getElementById("setup-progress-bar"),
+  setupMessage: document.getElementById("setup-message"),
+
+  onboardingError: document.getElementById("onboarding-error"),
+
+  syncNotesBtn: document.getElementById("sync-notes"),
+  lastSynced: document.getElementById("last-synced"),
+  syncDot: document.getElementById("sync-dot"),
+  syncBanner: document.getElementById("sync-banner"),
+  syncBannerMessage: document.getElementById("sync-banner-message"),
+  syncBannerBar: document.getElementById("sync-banner-bar"),
+  syncCancelBtn: document.getElementById("sync-cancel"),
+
+  newChatBtn: document.getElementById("new-chat"),
+  threadList: document.getElementById("thread-list"),
+  transcript: document.getElementById("transcript"),
+  composer: document.getElementById("composer"),
+  composerInput: document.getElementById("composer-input"),
+  composerSend: document.getElementById("composer-send"),
+};
+
+const state = {
+  baseUrl: DEFAULT_BACKEND_URL,
+  config: { ...DEFAULT_CONFIG },
+  onboarding: {
+    step: 1,
+    learnExpanded: false,
+    error: "",
+    export: {
+      status: "idle",
+      current: 0,
+      total: null,
+      message: "",
+      logs: [],
+      jobId: null,
+    },
+    setup: {
+      busy: false,
+      readyToComplete: false,
+      progress: 0,
+      stage: "Installing Ollama...",
+      message: "Preparing local setup...",
+      ingestJobId: null,
+    },
+  },
+  threads: [],
+  activeThreadId: null,
+  sync: {
+    busy: false,
+    progress: 0,
+    message: "",
+    exportJobId: null,
+    ingestJobId: null,
+    cancelRequested: false,
+  },
+};
+
+class WorkflowCancelled extends Error {}
 
 function tauriInvoke() {
   const tauriGlobal = window.__TAURI__;
@@ -74,228 +128,106 @@ function tauriInvoke() {
   return null;
 }
 
-function truncateText(text, maxChars = 3500) {
-  if (typeof text !== "string") {
-    return String(text);
-  }
-  if (text.length <= maxChars) {
-    return text;
-  }
-  return `${text.slice(0, maxChars)}\n\n...truncated...`;
-}
-
 function setupFormValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function readCommandField(payload, snakeKey, camelKey) {
-  if (!payload || typeof payload !== "object") {
-    return undefined;
-  }
-  if (payload[snakeKey] !== undefined) {
-    return payload[snakeKey];
-  }
-  return payload[camelKey];
+function nowEpochMsString() {
+  return String(Date.now());
 }
 
-function normalizeSetupConfig(payload) {
-  const embedModel = setupFormValue(
-    readCommandField(payload, "embed_model", "embedModel") || DEFAULT_SETUP_CONFIG.embed_model,
-  );
-  const chatModel = setupFormValue(
-    readCommandField(payload, "chat_model", "chatModel") || DEFAULT_SETUP_CONFIG.chat_model,
-  );
-  const notesExportDir = setupFormValue(
-    readCommandField(payload, "notes_export_dir", "notesExportDir"),
-  );
-  const wizardCompleted = readCommandField(payload, "wizard_completed", "wizardCompleted");
+function toISO(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString();
+  }
+  return date.toISOString();
+}
+
+function normalizeConfig(payload) {
   return {
-    embed_model: embedModel || DEFAULT_SETUP_CONFIG.embed_model,
-    chat_model: chatModel || DEFAULT_SETUP_CONFIG.chat_model,
-    notes_export_dir: notesExportDir || null,
-    wizard_completed: Boolean(wizardCompleted),
+    hasCompletedOnboarding: Boolean(
+      payload?.has_completed_onboarding ??
+        payload?.hasCompletedOnboarding ??
+        payload?.wizard_completed ??
+        payload?.wizardCompleted,
+    ),
+    exportFolderPath:
+      setupFormValue(
+        payload?.export_folder_path ??
+          payload?.exportFolderPath ??
+          payload?.notes_export_dir ??
+          payload?.notesExportDir,
+      ) || null,
+    lastSyncedAt:
+      setupFormValue(
+        payload?.last_synced_at ??
+          payload?.lastSyncedAt ??
+          payload?.last_sync_timestamp ??
+          payload?.lastSyncTimestamp,
+      ) || null,
+    embedModel:
+      setupFormValue(payload?.embed_model ?? payload?.embedModel) || DEFAULT_CONFIG.embedModel,
+    chatModel:
+      setupFormValue(payload?.chat_model ?? payload?.chatModel) || DEFAULT_CONFIG.chatModel,
   };
 }
 
-function resolveSelectedExportFolder() {
-  const fromState = setupFormValue(setupState.notes_export_dir);
-  if (fromState) {
-    return fromState;
-  }
-  const fromDisplay = setupFormValue(exportFolderPath?.textContent);
-  if (fromDisplay && fromDisplay !== "Not selected") {
-    return fromDisplay;
-  }
-  return "";
-}
-
-function uniqueStrings(values) {
-  const output = [];
-  values.forEach((value) => {
-    if (value && !output.includes(value)) {
-      output.push(value);
-    }
-  });
-  return output;
-}
-
-function createCard(title, subtitle, text) {
-  const card = document.createElement("div");
-  card.className = "result-item";
-
-  const heading = document.createElement("h4");
-  heading.textContent = title;
-  card.appendChild(heading);
-
-  if (subtitle) {
-    const meta = document.createElement("p");
-    meta.className = "backend-url";
-    meta.textContent = subtitle;
-    card.appendChild(meta);
-  }
-
-  const body = document.createElement("pre");
-  body.textContent = text;
-  card.appendChild(body);
-
-  return card;
-}
-
-function setStatusView(mode, text) {
-  statusText.textContent = text;
-  if (mode === "healthy") {
-    statusDot.style.background = "#2f9e44";
-  } else if (mode === "warn") {
-    statusDot.style.background = "#f59f00";
-  } else {
-    statusDot.style.background = "#d9480f";
-  }
-}
-
-function setWizardMessage(message, append = false) {
-  if (!wizardOutput) {
-    return;
-  }
-  wizardOutput.textContent = append
-    ? `${wizardOutput.textContent}\n${message}`
-    : message;
-}
-
-function setIngestMessage(message, append = false) {
-  if (!ingestOutput) {
-    return;
-  }
-  ingestOutput.textContent = append
-    ? `${ingestOutput.textContent}\n${message}`
-    : message;
-}
-
-function renderExportValidation(status) {
-  if (!status) {
-    setIngestMessage("Folder validation returned no status.");
-    return;
-  }
-  let output = JSON.stringify(status, null, 2);
-  if (status.permission_denied) {
-    output +=
-      "\n\nPermission guidance:\n1) Open macOS System Settings > Privacy & Security.\n2) Grant this app (or Terminal in dev mode) access to the selected folder.\n3) Click Validate Folder again.";
-  }
-  setIngestMessage(output);
-}
-
-function setSetupForm(config) {
-  if (embedModelInput) {
-    embedModelInput.value = config.embed_model || DEFAULT_SETUP_CONFIG.embed_model;
-  }
-  if (chatModelInput) {
-    chatModelInput.value = config.chat_model || DEFAULT_SETUP_CONFIG.chat_model;
-  }
-}
-
-function updateExportFolderDisplay() {
-  if (!exportFolderPath) {
-    return;
-  }
-  const path = setupState.notes_export_dir;
-  exportFolderPath.textContent = path && path.trim() ? path : "Not selected";
-}
-
-function updateWizardButtons() {
-  const disable = pullState.inProgress || !shellAvailable;
-  [checkOllamaBtn, installOllamaBtn, startOllamaBtn, saveSetupBtn, pullModelsBtn].forEach(
-    (button) => {
-      if (button) {
-        button.disabled = disable;
-      }
-    },
+function requiresOnboarding(config) {
+  return (
+    !config.hasCompletedOnboarding ||
+    !setupFormValue(config.exportFolderPath) ||
+    !setupFormValue(config.lastSyncedAt)
   );
-  if (retryFailedBtn) {
-    retryFailedBtn.disabled = disable || pullState.failed.length === 0;
-  }
-  if (resumePullBtn) {
-    resumePullBtn.disabled = disable || pullState.pending.length === 0;
-  }
 }
 
-function updateFolderActionButtons() {
-  const disable = !shellAvailable || ingestInProgress;
-  [pickFolderBtn, validateFolderBtn, ingestFullBtn, syncNowBtn].forEach((button) => {
-    if (button) {
-      button.disabled = disable;
-    }
-  });
+function appOwnedExportPath(basePath) {
+  return `${setupFormValue(basePath).replace(/\/+$/, "")}/${APP_OWNED_EXPORT_SUBDIR}`;
 }
 
-function startHealthPolling() {
-  if (healthPollTimer !== null) {
-    return;
+function formatRelativeTime(raw) {
+  if (!raw) {
+    return "never";
   }
-  healthPollTimer = window.setInterval(fetchHealth, 5000);
+  const numeric = Number(raw);
+  const ms = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    return "never";
+  }
+  const sec = Math.max(1, Math.floor((Date.now() - ms) / 1000));
+  if (sec < 60) return `${sec} second${sec === 1 ? "" : "s"} ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} minute${min === 1 ? "" : "s"} ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
+  const day = Math.floor(hr / 24);
+  return `${day} day${day === 1 ? "" : "s"} ago`;
 }
 
-function stopHealthPolling() {
-  if (healthPollTimer === null) {
-    return;
+function formatError(err, fallback = "Something went wrong.") {
+  if (err instanceof WorkflowCancelled) {
+    return "Action cancelled.";
   }
-  window.clearInterval(healthPollTimer);
-  healthPollTimer = null;
+  const raw =
+    typeof err === "string"
+      ? err
+      : typeof err?.message === "string"
+        ? err.message
+        : String(err ?? "");
+  const cleaned = raw.replace(/^Error:\s*/i, "").trim();
+  return cleaned || fallback;
 }
 
-function renderOllamaStatus(status) {
-  if (!status) {
-    return;
-  }
-  if (ollamaSummary) {
-    if (!status.installed) {
-      ollamaSummary.textContent = "Not installed";
-    } else if (!status.running) {
-      ollamaSummary.textContent = "Installed, not running";
-    } else {
-      ollamaSummary.textContent = "Running";
-    }
-  }
-  if (ollamaOutput) {
-    ollamaOutput.textContent = JSON.stringify(
-      {
-        installed: status.installed,
-        running: status.running,
-        version: status.version,
-        message: status.message,
-        installed_models: status.models,
-      },
-      null,
-      2,
-    );
-  }
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function switchTab(target) {
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tabTarget === target);
-  });
-  document.querySelectorAll(".tab-panel").forEach((panel) => {
-    panel.classList.toggle("active", panel.id === `panel-${target}`);
-  });
+function parseLogs(rawLogs, max = 10) {
+  return setupFormValue(rawLogs)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-max);
 }
 
 async function parseErrorResponse(response) {
@@ -318,616 +250,1171 @@ async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload || {}),
   });
   if (!response.ok) {
-    const detail = await parseErrorResponse(response);
-    throw new Error(`HTTP ${response.status}: ${detail}`);
+    throw new Error(`HTTP ${response.status}: ${await parseErrorResponse(response)}`);
   }
   return response.json();
+}
+
+async function postJsonWithTimeout(url, payload, timeoutMs = 90000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await parseErrorResponse(response)}`);
+    }
+    return response.json();
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error("Request timed out while waiting for the model.");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function getJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
-    const detail = await parseErrorResponse(response);
-    throw new Error(`HTTP ${response.status}: ${detail}`);
+    throw new Error(`HTTP ${response.status}: ${await parseErrorResponse(response)}`);
   }
   return response.json();
+}
+
+function setOnboardingError(message = "") {
+  state.onboarding.error = setupFormValue(message);
+  renderOnboarding();
+}
+
+function goToStep(step) {
+  state.onboarding.step = Math.max(1, Math.min(4, step));
+  renderOnboarding();
+}
+
+function showOnboardingShell() {
+  dom.onboardingShell.hidden = false;
+  dom.mainShell.hidden = true;
+}
+
+function showMainShell() {
+  dom.onboardingShell.hidden = true;
+  dom.mainShell.hidden = false;
+}
+
+function renderStepHeader() {
+  const stepMeta = STEP_META[state.onboarding.step];
+  dom.stepLabel.textContent = `Step ${state.onboarding.step} of 4`;
+  dom.stepTitle.textContent = stepMeta.title;
+
+  dom.stepDots.forEach((dot, idx) => {
+    dot.classList.remove("active", "complete");
+    const stepNumber = idx + 1;
+    if (stepNumber < state.onboarding.step) {
+      dot.classList.add("complete");
+    } else if (stepNumber === state.onboarding.step) {
+      dot.classList.add("active");
+    }
+  });
+}
+
+function renderOnboardingScreens() {
+  Object.values(dom.screens).forEach((screen) => screen.classList.remove("active"));
+  const stepKey = STEP_META[state.onboarding.step].key;
+  dom.screens[stepKey].classList.add("active");
+
+  dom.learnMoreCopy.hidden = !state.onboarding.learnExpanded;
+
+  dom.folderPath.textContent = setupFormValue(state.config.exportFolderPath) || "Not selected";
+
+  const exportState = state.onboarding.export;
+  const exportCompleted = exportState.status === "completed";
+  const hasTotal = typeof exportState.total === "number" && exportState.total > 0;
+  const ratio = hasTotal ? Math.max(0, Math.min(1, exportState.current / exportState.total)) : null;
+
+  if (exportCompleted) {
+    dom.exportProgressBar.classList.remove("indeterminate");
+    dom.exportProgressBar.style.width = "100%";
+    if (hasTotal) {
+      dom.exportStats.textContent = `Export completed. ${exportState.total} files exported`;
+    } else {
+      dom.exportStats.textContent = `Export completed. ${exportState.current} files exported`;
+    }
+  } else if (hasTotal) {
+    dom.exportProgressBar.classList.remove("indeterminate");
+    dom.exportProgressBar.style.width = `${Math.max(3, Math.round(ratio * 100))}%`;
+    dom.exportStats.textContent = `Exported ${exportState.current} of ${exportState.total} files`;
+  } else {
+    dom.exportProgressBar.classList.add("indeterminate");
+    dom.exportProgressBar.style.width = "28%";
+    dom.exportStats.textContent = `Exported ${exportState.current} files`;
+  }
+
+  dom.exportLogLines.textContent =
+    exportState.logs.length > 0
+      ? exportState.logs.join("\n")
+      : setupFormValue(exportState.message) || "Logs will appear as notes are exported.";
+  if (dom.exportDetails) {
+    dom.exportDetails.hidden = exportCompleted;
+    if (exportCompleted) {
+      dom.exportDetails.open = false;
+    }
+  }
+
+  const exportRunning = ["queued", "running", "cancelling"].includes(exportState.status);
+  dom.abortExportBtn.disabled = !exportRunning;
+  dom.nextSetupBtn.disabled = exportState.status !== "completed";
+
+  const setupState = state.onboarding.setup;
+  dom.setupProgressWrap.hidden = !setupState.busy && !setupState.readyToComplete;
+  dom.setupStage.textContent = setupState.stage;
+  dom.setupMessage.textContent = setupState.message;
+  dom.setupProgressBar.style.width = `${Math.max(0, Math.min(100, setupState.progress))}%`;
+  dom.setupProgressBar.classList.toggle("indeterminate", setupState.busy && setupState.progress < 8);
+
+  dom.embedModelInput.value = state.config.embedModel;
+  dom.chatModelInput.value = state.config.chatModel;
+
+  dom.startInstallBtn.disabled = setupState.busy;
+  dom.chooseFolderBtn.disabled = exportRunning || setupState.busy;
+  dom.exportNotesBtn.disabled = !setupFormValue(state.config.exportFolderPath) || exportRunning || setupState.busy;
+  dom.backWelcomeBtn.disabled = exportRunning || setupState.busy;
+  dom.backExportBtn.disabled = setupState.busy;
+  dom.setupNowBtn.hidden = setupState.readyToComplete;
+  dom.setupNowBtn.disabled = setupState.busy || setupState.readyToComplete;
+  dom.setupNowBtn.textContent = setupState.busy ? "Setting up..." : "Setup";
+  dom.completeSetupBtn.hidden = !setupState.readyToComplete;
+  dom.completeSetupBtn.disabled = setupState.busy || !setupState.readyToComplete;
+
+  dom.onboardingError.hidden = !state.onboarding.error;
+  dom.onboardingError.textContent = state.onboarding.error;
+}
+
+function renderOnboarding() {
+  if (dom.onboardingShell.hidden) {
+    return;
+  }
+  renderStepHeader();
+  renderOnboardingScreens();
+}
+
+function renderSyncUi() {
+  const busy = state.sync.busy;
+  dom.syncNotesBtn.disabled = busy;
+  dom.syncDot.hidden = !busy;
+  dom.syncBanner.hidden = !busy;
+  if (busy) {
+    dom.syncBannerMessage.textContent = state.sync.message || "Sync in progress...";
+    dom.syncBannerBar.style.width = `${Math.max(4, Math.min(100, state.sync.progress))}%`;
+    dom.syncCancelBtn.hidden = false;
+    dom.lastSynced.textContent = `Last synced: ${formatRelativeTime(state.config.lastSyncedAt)}`;
+  } else {
+    dom.syncCancelBtn.hidden = true;
+    dom.syncBannerBar.style.width = "0%";
+    dom.lastSynced.textContent = `Last synced: ${formatRelativeTime(state.config.lastSyncedAt)}`;
+  }
+}
+
+function normalizeThread(raw) {
+  return {
+    id: raw?.id || `thread-${nowEpochMsString()}`,
+    title: setupFormValue(raw?.title) || "New Chat",
+    createdAt: setupFormValue(raw?.created_at ?? raw?.createdAt) || nowEpochMsString(),
+    updatedAt: setupFormValue(raw?.updated_at ?? raw?.updatedAt) || nowEpochMsString(),
+    messages: Array.isArray(raw?.messages)
+      ? raw.messages.map((message) => ({
+          id: message?.id || `msg-${nowEpochMsString()}-${Math.floor(Math.random() * 10000)}`,
+          role: message?.role === "assistant" ? "assistant" : "user",
+          text: typeof message?.text === "string" ? message.text : "",
+          timestamp: setupFormValue(message?.timestamp) || nowEpochMsString(),
+          citations: Array.isArray(message?.citations) ? message.citations : null,
+          confidence: typeof message?.confidence === "number" ? message.confidence : null,
+          pending: Boolean(message?.pending),
+          pendingStage: setupFormValue(message?.pendingStage) || "",
+        }))
+      : [],
+  };
+}
+
+function toStorageThread(thread) {
+  return {
+    id: thread.id,
+    title: thread.title,
+    created_at: thread.createdAt,
+    updated_at: thread.updatedAt,
+    messages: thread.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      timestamp: message.timestamp,
+      citations: message.citations ?? null,
+      confidence: typeof message.confidence === "number" ? message.confidence : null,
+    })),
+  };
+}
+
+function sortThreads(threads) {
+  return [...threads].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+}
+
+function pruneThreads(threads) {
+  return sortThreads(threads).slice(0, 10);
+}
+
+function currentThread() {
+  return state.threads.find((thread) => thread.id === state.activeThreadId) || null;
+}
+
+function createThread() {
+  const timestamp = nowEpochMsString();
+  return {
+    id: `thread-${timestamp}-${Math.floor(Math.random() * 10000)}`,
+    title: "New Chat",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: [],
+  };
+}
+
+function deriveTitle(thread) {
+  const firstUser = thread.messages.find((message) => message.role === "user");
+  if (!firstUser || !firstUser.text.trim()) {
+    return "New Chat";
+  }
+  return firstUser.text.trim().slice(0, 60);
+}
+
+function renderThreads() {
+  dom.threadList.innerHTML = "";
+  sortThreads(state.threads).forEach((thread) => {
+    const item = document.createElement("li");
+    item.className = `thread-item${thread.id === state.activeThreadId ? " active" : ""}`;
+
+    const title = document.createElement("h4");
+    title.textContent = thread.title;
+
+    const time = document.createElement("span");
+    time.textContent = formatRelativeTime(thread.updatedAt);
+
+    item.appendChild(title);
+    item.appendChild(time);
+    item.addEventListener("click", () => {
+      state.activeThreadId = thread.id;
+      renderThreads();
+      renderTranscript();
+    });
+    dom.threadList.appendChild(item);
+  });
+}
+
+function renderTranscript() {
+  dom.transcript.innerHTML = "";
+  const thread = currentThread();
+  if (!thread || thread.messages.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "Ask something like: ‘What were my goals for 2026?’";
+    dom.transcript.appendChild(empty);
+    return;
+  }
+
+  thread.messages.forEach((message) => {
+    const article = document.createElement("article");
+    article.className = `message ${message.role}${message.pending ? " pending" : ""}`;
+
+    const body = document.createElement("div");
+    body.textContent = message.text;
+    article.appendChild(body);
+
+    if (message.pending) {
+      const pending = document.createElement("div");
+      pending.className = "pending-indicator";
+      const phase = setupFormValue(message.pendingStage) || "Thinking";
+      pending.textContent = `${phase}`;
+      const dots = document.createElement("span");
+      dots.className = "pending-dots";
+      dots.textContent = "...";
+      pending.appendChild(dots);
+      article.appendChild(pending);
+    }
+
+    if (message.role === "assistant" && Array.isArray(message.citations) && message.citations.length > 0) {
+      const citations = document.createElement("ul");
+      citations.className = "citation-list";
+      message.citations.slice(0, 5).forEach((citation, idx) => {
+        const item = document.createElement("li");
+        const noteId = setupFormValue(citation?.note_id ?? citation?.source?.note_id);
+        const chunkId = setupFormValue(citation?.chunk_id);
+        if (noteId && chunkId) {
+          item.textContent = `[${idx + 1}] ${noteId} · ${chunkId}`;
+        } else if (noteId) {
+          item.textContent = `[${idx + 1}] ${noteId}`;
+        } else if (chunkId) {
+          item.textContent = `[${idx + 1}] ${chunkId}`;
+        } else {
+          item.textContent = `[${idx + 1}] Source`;
+        }
+        citations.appendChild(item);
+      });
+      article.appendChild(citations);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const confidenceText =
+      typeof message.confidence === "number" ? ` · confidence ${Math.round(message.confidence * 100)}%` : "";
+    meta.textContent = `${message.role} · ${formatRelativeTime(message.timestamp)}${confidenceText}`;
+    article.appendChild(meta);
+
+    dom.transcript.appendChild(article);
+  });
+
+  dom.transcript.scrollTop = dom.transcript.scrollHeight;
 }
 
 async function resolveBackendUrl() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
-    shellAvailable = false;
     return DEFAULT_BACKEND_URL;
   }
   try {
-    const resolved = await invoke("backend_base_url");
-    if (typeof resolved === "string" && resolved.trim()) {
-      return resolved.trim();
+    const result = await invoke("backend_base_url");
+    if (typeof result === "string" && result.trim()) {
+      return result.trim();
     }
-  } catch (err) {
-    healthOutput.textContent = `Could not resolve backend URL from app shell: ${err}`;
+  } catch {
+    return DEFAULT_BACKEND_URL;
   }
   return DEFAULT_BACKEND_URL;
 }
 
-async function fetchHealth() {
-  setStatusView("warn", "Checking...");
-  try {
-    const data = await getJson(`${baseUrl}/health`);
-    healthOutput.textContent = JSON.stringify(data, null, 2);
-    const healthy = data.status === "ok" && data.store;
-    setStatusView(healthy ? "healthy" : "warn", healthy ? "Healthy" : "Degraded");
-  } catch (err) {
-    healthOutput.textContent = `Health check failed: ${err}`;
-    setStatusView("offline", "Offline");
-  }
-}
-
-async function refreshStats() {
-  try {
-    const stats = await getJson(`${baseUrl}/stats`);
-    statsOutput.textContent = JSON.stringify(stats, null, 2);
-  } catch (err) {
-    statsOutput.textContent = `Stats request failed: ${err}`;
-  }
-}
-
-async function loadSetupConfig() {
+async function loadConfig() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
-    shellAvailable = false;
-    setSetupForm(DEFAULT_SETUP_CONFIG);
-    setWizardMessage("Setup wizard actions require the Tauri desktop shell.");
-    setupState = { ...DEFAULT_SETUP_CONFIG };
-    updateExportFolderDisplay();
-    updateWizardButtons();
-    updateFolderActionButtons();
-    return setupState;
+    state.config = { ...DEFAULT_CONFIG };
+    return;
+  }
+  try {
+    const loaded = await invoke("load_app_config");
+    state.config = normalizeConfig(loaded);
+  } catch {
+    state.config = { ...DEFAULT_CONFIG };
+  }
+}
+
+async function saveConfig(updates) {
+  state.config = { ...state.config, ...updates };
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return;
   }
 
   try {
-    const loaded = await invoke("setup_load_config");
-    setupState = normalizeSetupConfig(loaded);
-    setSetupForm(setupState);
-    updateExportFolderDisplay();
-    setWizardMessage(
-      setupState.wizard_completed
-        ? "Setup config loaded. Wizard is marked complete."
-        : "Setup config loaded. Continue with setup steps.",
+    const saved = await invoke("save_app_config", {
+      hasCompletedOnboarding: state.config.hasCompletedOnboarding,
+      exportFolderPath: state.config.exportFolderPath,
+      lastSyncedAt: state.config.lastSyncedAt,
+      embedModel: state.config.embedModel,
+      chatModel: state.config.chatModel,
+    });
+    state.config = normalizeConfig(saved);
+  } catch {
+    // Keep local state for non-desktop shell fallback.
+  }
+}
+
+async function loadThreads() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    state.threads = [createThread()];
+    state.activeThreadId = state.threads[0].id;
+    return;
+  }
+
+  try {
+    const loaded = await invoke("load_chat_threads");
+    state.threads = Array.isArray(loaded) ? loaded.map(normalizeThread) : [];
+  } catch {
+    state.threads = [];
+  }
+
+  if (state.threads.length === 0) {
+    state.threads = [createThread()];
+  }
+  state.threads = pruneThreads(state.threads);
+  state.activeThreadId = state.threads[0].id;
+}
+
+async function saveThreads() {
+  state.threads = pruneThreads(state.threads);
+  if (!state.threads.some((thread) => thread.id === state.activeThreadId)) {
+    state.activeThreadId = state.threads[0]?.id || null;
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return;
+  }
+
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error("save_chat_threads timed out")),
+      SAVE_THREADS_TIMEOUT_MS,
     );
-    return setupState;
-  } catch (err) {
-    setupState = { ...DEFAULT_SETUP_CONFIG };
-    setSetupForm(setupState);
-    updateExportFolderDisplay();
-    setWizardMessage(`Could not load setup config: ${err}`);
-    return setupState;
-  } finally {
-    updateWizardButtons();
-    updateFolderActionButtons();
-  }
-}
-
-async function saveSetupConfig(wizardCompleted) {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    throw new Error("Tauri invoke is not available");
-  }
-
-  const embedModel = setupFormValue(embedModelInput?.value);
-  const chatModel = setupFormValue(chatModelInput?.value);
-  if (!embedModel || !chatModel) {
-    throw new Error("Both embedding and chat model names are required");
-  }
-
-  const saved = await invoke("setup_save_config", {
-    embedModel,
-    chatModel,
-    wizardCompleted,
-    embed_model: embedModel,
-    chat_model: chatModel,
-    wizard_completed: wizardCompleted,
   });
-  setupState = normalizeSetupConfig(saved);
-  updateExportFolderDisplay();
-  setWizardMessage(
-    `Saved setup config (embed=${setupState.embed_model}, chat=${setupState.chat_model}, completed=${setupState.wizard_completed})`,
-  );
-  return setupState;
-}
-
-async function saveExportFolder(path) {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    throw new Error("Tauri invoke is not available");
-  }
-  const normalizedPath = setupFormValue(path);
-  const saved = await invoke("setup_save_notes_export_dir", {
-    notesExportDir: normalizedPath,
-    notes_export_dir: normalizedPath,
-  });
-  setupState = normalizeSetupConfig(saved);
-  updateExportFolderDisplay();
-  return setupState;
-}
-
-async function checkOllamaStatus() {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    setWizardMessage("Cannot check Ollama: Tauri invoke is unavailable.");
-    return;
-  }
-  try {
-    const status = await invoke("ollama_status");
-    renderOllamaStatus(status);
-    setWizardMessage(status.message);
-  } catch (err) {
-    setWizardMessage(`Failed to check Ollama: ${err}`);
-  }
-}
-
-async function installOllama() {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    setWizardMessage("Cannot open installer: Tauri invoke is unavailable.");
-    return;
-  }
-  try {
-    await invoke("open_ollama_download_page");
-    setWizardMessage("Opened Ollama download page in your browser.");
-  } catch (err) {
-    setWizardMessage(`Failed to open Ollama download page: ${err}`);
-  }
-}
-
-async function startOllama() {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    setWizardMessage("Cannot start Ollama: Tauri invoke is unavailable.");
-    return;
-  }
-  try {
-    const message = await invoke("start_ollama");
-    setWizardMessage(message);
-    await checkOllamaStatus();
-  } catch (err) {
-    setWizardMessage(`Failed to start Ollama: ${err}`);
-  }
-}
-
-function describePullFailure(result) {
-  if (!result || result.success) {
-    return "";
-  }
-  switch (result.error_type) {
-    case "timeout":
-      return "Timed out while pulling model.";
-    case "offline":
-      return "Network/Ollama connectivity issue detected.";
-    case "disk_full":
-      return "Insufficient disk space detected.";
-    case "not_installed":
-      return "Ollama is not installed or unavailable in PATH.";
-    default:
-      return "Unknown pull error.";
-  }
-}
-
-async function executePullPlan(models, label) {
-  const invoke = tauriInvoke();
-  if (typeof invoke !== "function") {
-    setWizardMessage("Cannot pull models: Tauri invoke is unavailable.");
-    return false;
-  }
-
-  const plan = uniqueStrings(models);
-  if (plan.length === 0) {
-    setWizardMessage("No models queued for pull.");
-    return false;
-  }
-
-  pullState.failed = pullState.failed.filter((entry) => !plan.includes(entry.model));
-  pullState.pending = [...plan];
-  pullState.inProgress = true;
-  updateWizardButtons();
 
   try {
-    setWizardMessage(`${label}: ${plan.join(", ")}`, true);
-    for (let idx = 0; idx < plan.length; idx += 1) {
-      const model = plan[idx];
-      setWizardMessage(`Pulling ${model}...`, true);
-      const result = await invoke("ollama_pull_model", { model });
-      pullState.pending = plan.slice(idx + 1);
-
-      if (result.success) {
-        if (!pullState.completed.includes(model)) {
-          pullState.completed.push(model);
-        }
-        setWizardMessage(`Model ${model}: success`, true);
-        continue;
-      }
-
-      pullState.failed = pullState.failed.filter((entry) => entry.model !== model);
-      pullState.failed.push({
-        model,
-        error_type: result.error_type || "unknown",
-        retryable: Boolean(result.retryable),
-      });
-
-      setWizardMessage(
-        `Model ${model}: failed (${result.error_type || "unknown"}, retryable=${Boolean(result.retryable)})`,
-        true,
-      );
-      const summary = describePullFailure(result);
-      if (summary) {
-        setWizardMessage(summary, true);
-      }
-      setWizardMessage(truncateText(result.output), true);
-      if (result.retryable || pullState.pending.length > 0) {
-        setWizardMessage("Use Retry Failed or Resume Remaining after fixing the issue.", true);
-      }
-      return false;
-    }
-    setWizardMessage("All models in this pull plan completed successfully.", true);
-    return true;
-  } catch (err) {
-    setWizardMessage(`Model pull flow failed: ${err}`, true);
-    return false;
+    await Promise.race([
+      invoke("save_chat_threads", {
+        threads: state.threads.map(toStorageThread),
+      }),
+      timeoutPromise,
+    ]);
+  } catch {
+    // Keep in-memory state even if persistence fails.
   } finally {
-    pullState.inProgress = false;
-    updateWizardButtons();
-  }
-}
-
-async function pullSelectedModels() {
-  const embedModel = setupFormValue(embedModelInput?.value);
-  const chatModel = setupFormValue(chatModelInput?.value);
-  const models = uniqueStrings([embedModel, chatModel]);
-  if (!embedModel || !chatModel) {
-    setWizardMessage("Both model names are required before pulling models.");
-    return;
-  }
-
-  pullState.completed = [];
-  pullState.failed = [];
-  pullState.pending = [...models];
-  updateWizardButtons();
-
-  try {
-    await saveSetupConfig(false);
-    const success = await executePullPlan(models, "Starting model download");
-    if (success) {
-      await saveSetupConfig(true);
-      setWizardMessage("Setup step complete: selected models are available locally.", true);
-      await checkOllamaStatus();
+    if (timer) {
+      window.clearTimeout(timer);
     }
-  } catch (err) {
-    setWizardMessage(`Model pull flow failed: ${err}`, true);
   }
 }
 
-async function retryFailedModels() {
-  const failedModels = uniqueStrings(pullState.failed.map((entry) => entry.model));
-  if (failedModels.length === 0) {
-    setWizardMessage("No failed models to retry.");
-    return;
-  }
-  try {
-    await saveSetupConfig(false);
-    const success = await executePullPlan(failedModels, "Retrying failed models");
-    if (success && pullState.pending.length === 0) {
-      await saveSetupConfig(true);
-      await checkOllamaStatus();
-    }
-  } catch (err) {
-    setWizardMessage(`Retry failed: ${err}`, true);
-  }
-}
-
-async function resumeRemainingModels() {
-  const remaining = uniqueStrings(pullState.pending);
-  if (remaining.length === 0) {
-    setWizardMessage("No remaining models to resume.");
-    return;
-  }
-  try {
-    await saveSetupConfig(false);
-    const success = await executePullPlan(remaining, "Resuming remaining models");
-    if (success && pullState.failed.length === 0 && pullState.pending.length === 0) {
-      await saveSetupConfig(true);
-      await checkOllamaStatus();
-    }
-  } catch (err) {
-    setWizardMessage(`Resume failed: ${err}`, true);
-  }
-}
-
-async function pickExportFolder() {
+async function chooseFolder() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
-    setIngestMessage("Cannot pick folder: Tauri invoke is unavailable.");
+    setOnboardingError("Folder picker requires desktop shell.");
     return;
   }
 
   try {
     const selected = await invoke("pick_export_folder");
-    const normalizedPath = setupFormValue(
-      typeof selected === "string" ? selected : selected?.path || "",
-    );
-    if (!normalizedPath) {
-      setIngestMessage("Folder selection cancelled.");
+    const folder = setupFormValue(typeof selected === "string" ? selected : selected?.path);
+    if (!folder) {
       return;
     }
-    setupState = { ...setupState, notes_export_dir: normalizedPath };
-    updateExportFolderDisplay();
-    await saveExportFolder(normalizedPath);
-    setIngestMessage(`Selected folder: ${setupState.notes_export_dir || normalizedPath}`);
+    await saveConfig({ exportFolderPath: folder });
+    state.onboarding.export = {
+      status: "idle",
+      current: 0,
+      total: null,
+      message: "",
+      logs: [],
+      jobId: null,
+    };
+    setOnboardingError("");
   } catch (err) {
-    setIngestMessage(`Folder picker failed: ${err}`);
+    setOnboardingError(formatError(err, "Could not open folder picker."));
   }
 }
 
-async function validateExportFolder() {
+async function pollExportJob() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
-    setIngestMessage("Cannot validate folder: Tauri invoke is unavailable.");
-    return null;
+    throw new Error("Export requires desktop shell.");
   }
-  let folder = resolveSelectedExportFolder();
-  if (!folder) {
-    await loadSetupConfig();
-    folder = resolveSelectedExportFolder();
-  }
-  if (!folder) {
-    setIngestMessage("No export folder selected.");
-    return null;
-  }
-  setupState = { ...setupState, notes_export_dir: folder };
-  updateExportFolderDisplay();
 
-  try {
-    const status = await invoke("validate_export_folder", { path: folder });
-    renderExportValidation(status);
-    return status;
-  } catch (err) {
-    setIngestMessage(`Folder validation failed: ${err}`);
-    return null;
+  while (true) {
+    const snapshot = await invoke("get_export_job");
+    if (snapshot && typeof snapshot === "object") {
+      state.onboarding.export.status = setupFormValue(snapshot.status) || "running";
+      state.onboarding.export.current = Number(snapshot.current || 0);
+      state.onboarding.export.total =
+        typeof snapshot.total === "number" && snapshot.total >= 0 ? snapshot.total : null;
+      state.onboarding.export.message = setupFormValue(snapshot.message) || "Exporting...";
+      state.onboarding.export.logs = parseLogs(snapshot.logs, 10);
+
+      if (
+        state.onboarding.export.status !== "completed" &&
+        state.onboarding.export.message.toLowerCase().includes("export complete")
+      ) {
+        state.onboarding.export.status = "completed";
+      }
+      renderOnboarding();
+
+      if (["completed", "failed", "cancelled"].includes(state.onboarding.export.status)) {
+        return snapshot;
+      }
+    }
+    await delay(500);
   }
 }
 
-async function runIngest(reindex) {
-  let folder = resolveSelectedExportFolder();
+async function startExportFlow() {
+  const folder = setupFormValue(state.config.exportFolderPath);
   if (!folder) {
-    await loadSetupConfig();
-    folder = resolveSelectedExportFolder();
-  }
-  if (!folder) {
-    setIngestMessage("No export folder selected.");
+    setOnboardingError("Choose a folder before exporting notes.");
     return;
   }
-  setupState = { ...setupState, notes_export_dir: folder };
-  updateExportFolderDisplay();
-  ingestInProgress = true;
-  updateFolderActionButtons();
-  stopHealthPolling();
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    setOnboardingError("Export requires desktop shell.");
+    return;
+  }
+
+  setOnboardingError("");
+  goToStep(3);
+  state.onboarding.export = {
+    status: "queued",
+    current: 0,
+    total: null,
+    message: "Starting export...",
+    logs: ["Starting export..."],
+    jobId: null,
+  };
+  renderOnboarding();
 
   try {
-    const validation = await validateExportFolder();
-    if (!validation || !validation.exists || !validation.is_dir || validation.supported_files === 0) {
-      setIngestMessage("Cannot ingest until folder validation passes.", true);
-      return;
+    // Ensure each onboarding export run starts with a clean app-owned subfolder.
+    await cleanupExportAfterAbort();
+    const exportPayload = {
+      exportFolderPath: folder,
+    };
+    if (Number.isInteger(ONBOARDING_EXPORT_LIMIT) && ONBOARDING_EXPORT_LIMIT > 0) {
+      exportPayload.maxFiles = ONBOARDING_EXPORT_LIMIT;
     }
-    if (validation.permission_denied) {
-      setIngestMessage(
-        "Cannot ingest because folder access is denied. Grant access and retry validation first.",
-        true,
-      );
+    const started = await invoke("start_export_job", exportPayload);
+    state.onboarding.export.jobId = started?.job_id || null;
+
+    const terminal = await pollExportJob();
+    const status =
+      state.onboarding.export.status === "completed"
+        ? "completed"
+        : setupFormValue(terminal?.status || state.onboarding.export.status);
+
+    if (status === "completed") {
+      state.onboarding.export.status = "completed";
+      state.onboarding.export.message = "Export finished successfully.";
+      renderOnboarding();
+      await delay(300);
+      goToStep(4);
       return;
     }
 
-    const modeLabel = reindex ? "full reindex" : "delta sync";
-    const mode = reindex ? "full" : "delta";
-    setIngestMessage(`Running ${modeLabel}...`, true);
+    if (status === "cancelled") {
+      throw new WorkflowCancelled("Export cancelled.");
+    }
 
+    throw new Error(setupFormValue(terminal?.error) || setupFormValue(terminal?.message) || "Export failed.");
+  } catch (err) {
+    await cleanupExportAfterAbort();
+    state.onboarding.export = {
+      status: "idle",
+      current: 0,
+      total: null,
+      message: "",
+      logs: [],
+      jobId: null,
+    };
+    goToStep(2);
+    setOnboardingError(formatError(err, "Export failed. Please try again."));
+  }
+}
+
+async function cleanupExportAfterAbort() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return;
+  }
+  const folder = setupFormValue(state.config.exportFolderPath);
+  if (!folder) {
+    return;
+  }
+
+  await invoke("delete_export_subfolder", {
+    exportFolderPath: folder,
+  }).catch(() => null);
+}
+
+async function abortExportFlow() {
+  const running = ["queued", "running", "cancelling"].includes(state.onboarding.export.status);
+  if (!running) {
+    return;
+  }
+  const shouldAbort = window.confirm("Abort export and clean up partial files?");
+  if (!shouldAbort) {
+    return;
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke === "function") {
+    await invoke("cancel_export_job").catch(() => null);
+  }
+  await cleanupExportAfterAbort();
+
+  state.onboarding.export = {
+    status: "idle",
+    current: 0,
+    total: null,
+    message: "",
+    logs: [],
+    jobId: null,
+  };
+  goToStep(2);
+  setOnboardingError("Export aborted. You can choose a folder and try again.");
+}
+
+async function ensureBackendHealthy() {
+  try {
+    await getJson(`${state.baseUrl}/health`);
+  } catch {
+    throw new Error("Backend unavailable. Start the app backend and retry.");
+  }
+}
+
+async function ensureChatReady() {
+  let health;
+  try {
+    health = await getJson(`${state.baseUrl}/health`);
+  } catch {
+    throw new Error("Backend unavailable. Start the app backend and retry.");
+  }
+
+  if (health?.status !== "ok") {
+    throw new Error("Backend is not ready yet.");
+  }
+  if (health?.llm === false) {
+    throw new Error(
+      `Local chat model is unavailable. Install '${state.config.chatModel}' in Ollama and retry.`,
+    );
+  }
+  if (health?.embedder === false) {
+    throw new Error(
+      `Embedding model is unavailable. Install '${state.config.embedModel}' in Ollama and retry.`,
+    );
+  }
+}
+
+async function runSetupStage(label, fromProgress, toProgress, task, minMs = 1200) {
+  state.onboarding.setup.stage = label;
+  state.onboarding.setup.message = label;
+  state.onboarding.setup.progress = Math.max(state.onboarding.setup.progress, fromProgress);
+  renderOnboarding();
+
+  const rampCap = Math.max(fromProgress, toProgress - 4);
+  const timer = window.setInterval(() => {
+    if (!state.onboarding.setup.busy) {
+      return;
+    }
+    if (state.onboarding.setup.progress < rampCap) {
+      state.onboarding.setup.progress = Math.min(rampCap, state.onboarding.setup.progress + 1);
+      renderOnboarding();
+    }
+  }, 140);
+
+  const startedAt = Date.now();
+  let stageError = null;
+  try {
+    await task();
+  } catch (err) {
+    stageError = err;
+  } finally {
+    window.clearInterval(timer);
+  }
+
+  const elapsed = Date.now() - startedAt;
+  if (elapsed < minMs) {
+    await delay(minMs - elapsed);
+  }
+  if (!stageError) {
+    state.onboarding.setup.progress = Math.max(state.onboarding.setup.progress, toProgress);
+  }
+  renderOnboarding();
+
+  if (stageError) {
+    throw stageError;
+  }
+}
+
+async function ensureModelAvailable(model, installedModels) {
+  if (installedModels.includes(model)) {
+    return;
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    throw new Error("Model installation requires desktop shell.");
+  }
+
+  const pull = await invoke("ollama_pull_model", { model });
+  if (!pull?.success) {
+    throw new Error(`Model pull failed for ${model}. ${setupFormValue(pull?.output)}`.trim());
+  }
+}
+
+async function runIngestSetupPhase(folderPath) {
+  const payload = await postJson(`${state.baseUrl}/jobs/ingest`, {
+    export_dir: appOwnedExportPath(folderPath),
+    mode: "full",
+    reindex: true,
+  });
+  state.onboarding.setup.ingestJobId = payload.job_id;
+
+  while (true) {
+    const snapshot = await getJson(`${state.baseUrl}/jobs/${payload.job_id}`);
+    state.onboarding.setup.message = setupFormValue(snapshot.message) || "Warming up...";
+
+    if (typeof snapshot.total === "number" && snapshot.total > 0) {
+      const ratio = Math.max(0, Math.min(1, Number(snapshot.current || 0) / snapshot.total));
+      const mapped = Math.round(70 + ratio * 30);
+      state.onboarding.setup.progress = Math.max(state.onboarding.setup.progress, Math.min(99, mapped));
+    }
+    renderOnboarding();
+
+    if (snapshot.status === "completed") {
+      state.onboarding.setup.progress = 100;
+      renderOnboarding();
+      return snapshot;
+    }
+    if (snapshot.status === "cancelled") {
+      throw new WorkflowCancelled("Setup was cancelled.");
+    }
+    if (snapshot.status === "failed") {
+      throw new Error(setupFormValue(snapshot.error) || "Indexing failed.");
+    }
+
+    await delay(600);
+  }
+}
+
+async function startLocalSetupFlow() {
+  if (state.onboarding.setup.busy) {
+    return;
+  }
+
+  const folderPath = setupFormValue(state.config.exportFolderPath);
+  if (!folderPath) {
+    setOnboardingError("Choose an export folder before setup.");
+    goToStep(2);
+    return;
+  }
+  if (state.onboarding.export.status !== "completed") {
+    setOnboardingError("Complete note export first.");
+    goToStep(3);
+    return;
+  }
+
+  const embedModel = setupFormValue(dom.embedModelInput.value) || DEFAULT_CONFIG.embedModel;
+  const chatModel = setupFormValue(dom.chatModelInput.value) || DEFAULT_CONFIG.chatModel;
+
+  await saveConfig({ embedModel, chatModel, exportFolderPath: folderPath });
+
+  state.onboarding.setup.busy = true;
+  state.onboarding.setup.readyToComplete = false;
+  state.onboarding.setup.progress = 2;
+  state.onboarding.setup.stage = "Installing Ollama...";
+  state.onboarding.setup.message = "Preparing local setup...";
+  setOnboardingError("");
+  renderOnboarding();
+
+  try {
+    await runSetupStage(
+      "Installing Ollama...",
+      2,
+      18,
+      async () => {
+        await ensureBackendHealthy();
+        const invoke = tauriInvoke();
+        if (typeof invoke !== "function") {
+          throw new Error("Ollama checks require desktop shell.");
+        }
+        let ollama = await invoke("ollama_status");
+        if (!ollama?.installed) {
+          throw new Error("Ollama is not installed. Install Ollama and click Setup again.");
+        }
+        if (!ollama?.running) {
+          await invoke("start_ollama").catch(() => null);
+          await delay(1200);
+          ollama = await invoke("ollama_status");
+          if (!ollama?.running) {
+            throw new Error("Ollama is installed but not running. Open Ollama and retry.");
+          }
+        }
+      },
+      1800,
+    );
+
+    let installedModels = [];
     const invoke = tauriInvoke();
-    const result =
-      typeof invoke === "function"
-        ? await invoke("backend_ingest", {
-            exportDir: folder,
-            export_dir: folder,
-            mode,
-            reindex,
-          })
-        : await postJson(`${baseUrl}/ingest`, {
-            export_dir: folder,
-            mode,
-            reindex,
-          });
+    if (typeof invoke === "function") {
+      const status = await invoke("ollama_status");
+      installedModels = Array.isArray(status?.models) ? status.models : [];
+    }
 
-    const summary = result?.delta_summary || {};
-    const lines = [
-      `Ingest completed (${result?.mode || mode}).`,
-      `Changed notes: ${result?.changed_notes ?? 0}`,
-      `Removed notes: ${result?.removed_notes ?? 0}`,
-      `Chunks indexed: ${result?.chunks_indexed ?? 0}`,
-      `Added/Updated/Unchanged: ${summary.added_notes ?? 0}/${summary.updated_notes ?? 0}/${summary.unchanged_notes ?? 0}`,
-      `Scanned notes: ${summary.scanned_notes ?? 0}`,
-      `Last sync time: ${result?.last_sync_time || "n/a"}`,
-    ];
-    setIngestMessage(lines.join("\n"), true);
-    await refreshStats();
-  } catch (err) {
-    setIngestMessage(`Ingest failed: ${err}`, true);
-  } finally {
-    ingestInProgress = false;
-    updateFolderActionButtons();
-    startHealthPolling();
-  }
-}
-
-function renderSearchResults(items) {
-  searchResults.innerHTML = "";
-  if (!Array.isArray(items) || items.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "backend-url";
-    empty.textContent = "No search results.";
-    searchResults.appendChild(empty);
-    return;
-  }
-
-  items.forEach((item, index) => {
-    const noteId = item.note_id || item.source?.note_id || "unknown note";
-    const scoreText =
-      typeof item.score === "number"
-        ? `score=${item.score.toFixed(3)} · note=${noteId}`
-        : `score=n/a · note=${noteId}`;
-    const card = createCard(
-      `Result ${index + 1} · ${item.chunk_id || "unknown chunk"}`,
-      scoreText,
-      item.text || "",
+    await runSetupStage(
+      "Downloading chat model...",
+      18,
+      45,
+      async () => {
+        await ensureModelAvailable(chatModel, installedModels);
+      },
+      2000,
     );
-    const actionRow = document.createElement("div");
-    actionRow.className = "wizard-actions";
-    const askAboutBtn = document.createElement("button");
-    askAboutBtn.className = "secondary";
-    askAboutBtn.textContent = "Ask About This";
-    askAboutBtn.addEventListener("click", () => {
-      askQueryInput.value = `Based on this note chunk, answer the question:\n\n${item.text || ""}`;
-      switchTab("ask");
-    });
-    actionRow.appendChild(askAboutBtn);
-    card.appendChild(actionRow);
-    searchResults.appendChild(card);
-  });
-}
 
-async function runSearch() {
-  const query = setupFormValue(searchQueryInput?.value);
-  const topKRaw = setupFormValue(searchTopKInput?.value);
-  const topK = Number.parseInt(topKRaw || "5", 10);
-  if (!query) {
-    searchResults.innerHTML = "";
-    searchResults.appendChild(createCard("Validation", null, "Search query must not be empty."));
-    return;
-  }
+    if (!installedModels.includes(chatModel)) {
+      installedModels.push(chatModel);
+    }
 
-  runSearchBtn.disabled = true;
-  try {
-    const response = await postJson(`${baseUrl}/search`, {
-      query,
-      top_k: Number.isFinite(topK) && topK > 0 ? topK : 5,
-    });
-    renderSearchResults(response.results || []);
-  } catch (err) {
-    searchResults.innerHTML = "";
-    searchResults.appendChild(createCard("Search failed", null, String(err)));
-  } finally {
-    runSearchBtn.disabled = false;
-  }
-}
-
-function renderCitations(citations) {
-  askCitations.innerHTML = "";
-  if (!Array.isArray(citations) || citations.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "backend-url";
-    empty.textContent = "No citations returned.";
-    askCitations.appendChild(empty);
-    return;
-  }
-
-  citations.forEach((citation, index) => {
-    const noteId = citation.note_id || citation.source?.note_id || "unknown note";
-    const scoreText =
-      typeof citation.score === "number"
-        ? `score=${citation.score.toFixed(3)} · note=${noteId}`
-        : `score=n/a · note=${noteId}`;
-    const card = createCard(
-      `Citation ${index + 1} · ${citation.chunk_id || "unknown chunk"}`,
-      scoreText,
-      citation.text || "",
+    await runSetupStage(
+      "Downloading embedding model...",
+      45,
+      70,
+      async () => {
+        await ensureModelAvailable(embedModel, installedModels);
+      },
+      2200,
     );
-    askCitations.appendChild(card);
-  });
+
+    state.onboarding.setup.stage = "Warming up...";
+    state.onboarding.setup.message = "Indexing your notes locally...";
+    renderOnboarding();
+    const ingestResult = await runIngestSetupPhase(folderPath);
+
+    await saveConfig({
+      hasCompletedOnboarding: true,
+      exportFolderPath: folderPath,
+      lastSyncedAt: toISO(ingestResult?.result?.last_sync_time),
+    });
+
+    state.onboarding.setup.busy = false;
+    state.onboarding.setup.readyToComplete = true;
+    state.onboarding.setup.progress = 100;
+    state.onboarding.setup.stage = "Setup complete";
+    state.onboarding.setup.message = "Local setup is ready. Click Complete to open chat.";
+    renderOnboarding();
+  } catch (err) {
+    state.onboarding.setup.busy = false;
+    state.onboarding.setup.readyToComplete = false;
+    renderOnboarding();
+    setOnboardingError(formatError(err, "Setup failed. Please retry."));
+  }
 }
 
-async function runAsk() {
-  const query = setupFormValue(askQueryInput?.value);
-  if (!query) {
-    askAnswer.textContent = "Question must not be empty.";
-    askConfidence.textContent = "n/a";
-    askCitations.innerHTML = "";
+async function completeSetupFlow() {
+  if (state.onboarding.setup.busy || !state.onboarding.setup.readyToComplete) {
     return;
   }
 
-  runAskBtn.disabled = true;
+  await loadThreads();
+  renderThreads();
+  renderTranscript();
+  renderSyncUi();
+  showMainShell();
+}
+
+async function startSyncFlow() {
+  if (state.sync.busy) {
+    return;
+  }
+
+  const folderPath = setupFormValue(state.config.exportFolderPath);
+  if (!folderPath) {
+    state.sync.message = "No export folder configured.";
+    renderSyncUi();
+    return;
+  }
+
+  state.sync.busy = true;
+  state.sync.cancelRequested = false;
+  state.sync.progress = 4;
+  state.sync.message = "Exporting latest notes...";
+  renderSyncUi();
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    state.sync.busy = false;
+    state.sync.message = "Sync requires desktop shell.";
+    renderSyncUi();
+    return;
+  }
+
   try {
-    const response = await postJson(`${baseUrl}/ask`, { query });
-    askAnswer.textContent = response.answer || "";
-    askConfidence.textContent =
-      typeof response.confidence === "number" ? response.confidence.toFixed(3) : "n/a";
-    renderCitations(response.citations || []);
+    // Keep sync export deterministic by removing stale files before re-export.
+    await invoke("delete_export_subfolder", {
+      exportFolderPath: folderPath,
+    }).catch(() => null);
+
+    const exportStart = await invoke("start_export_job", {
+      exportFolderPath: folderPath,
+    });
+    state.sync.exportJobId = exportStart?.job_id || null;
+
+    while (true) {
+      if (state.sync.cancelRequested) {
+        throw new WorkflowCancelled("Sync cancelled.");
+      }
+      const snapshot = await invoke("get_export_job");
+      if (snapshot && typeof snapshot === "object") {
+        const total = typeof snapshot.total === "number" && snapshot.total > 0 ? snapshot.total : null;
+        if (total) {
+          const ratio = Math.max(0, Math.min(1, Number(snapshot.current || 0) / total));
+          state.sync.progress = Math.max(state.sync.progress, Math.round(ratio * 50));
+        } else {
+          state.sync.progress = Math.min(45, state.sync.progress + 1);
+        }
+        state.sync.message = setupFormValue(snapshot.message) || "Exporting latest notes...";
+        renderSyncUi();
+
+        if (["completed", "failed", "cancelled"].includes(snapshot.status)) {
+          if (snapshot.status === "completed") {
+            break;
+          }
+          if (snapshot.status === "cancelled") {
+            throw new WorkflowCancelled("Sync cancelled.");
+          }
+          throw new Error(setupFormValue(snapshot.error) || "Export sync failed.");
+        }
+      }
+      await delay(500);
+    }
+
+    state.sync.message = "Indexing note changes...";
+    state.sync.progress = Math.max(state.sync.progress, 52);
+    renderSyncUi();
+
+    const ingestStart = await postJson(`${state.baseUrl}/jobs/ingest`, {
+      export_dir: appOwnedExportPath(folderPath),
+      mode: "delta",
+      reindex: false,
+    });
+    state.sync.ingestJobId = ingestStart.job_id;
+
+    while (true) {
+      if (state.sync.cancelRequested) {
+        throw new WorkflowCancelled("Sync cancelled.");
+      }
+
+      const snapshot = await getJson(`${state.baseUrl}/jobs/${ingestStart.job_id}`);
+      state.sync.message = setupFormValue(snapshot.message) || "Indexing note changes...";
+
+      if (typeof snapshot.total === "number" && snapshot.total > 0) {
+        const ratio = Math.max(0, Math.min(1, Number(snapshot.current || 0) / snapshot.total));
+        state.sync.progress = Math.max(state.sync.progress, 50 + Math.round(ratio * 50));
+      } else {
+        state.sync.progress = Math.min(96, state.sync.progress + 1);
+      }
+      renderSyncUi();
+
+      if (snapshot.status === "completed") {
+        state.sync.progress = 100;
+        renderSyncUi();
+        await saveConfig({ lastSyncedAt: toISO(snapshot?.result?.last_sync_time) });
+        break;
+      }
+      if (snapshot.status === "cancelled") {
+        throw new WorkflowCancelled("Sync cancelled.");
+      }
+      if (snapshot.status === "failed") {
+        throw new Error(setupFormValue(snapshot.error) || "Sync ingest failed.");
+      }
+
+      await delay(600);
+    }
+
+    state.sync.message = "Sync complete.";
+    renderSyncUi();
+    await delay(500);
   } catch (err) {
-    askAnswer.textContent = `Ask failed: ${err}`;
-    askConfidence.textContent = "n/a";
-    askCitations.innerHTML = "";
+    state.sync.message = formatError(err, "Sync failed.");
+    renderSyncUi();
   } finally {
-    runAskBtn.disabled = false;
+    state.sync.busy = false;
+    state.sync.progress = 0;
+    state.sync.exportJobId = null;
+    state.sync.ingestJobId = null;
+    state.sync.cancelRequested = false;
+    renderSyncUi();
+  }
+}
+
+async function cancelSyncFlow() {
+  if (!state.sync.busy) {
+    return;
+  }
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return;
+  }
+
+  state.sync.cancelRequested = true;
+  await invoke("cancel_export_job").catch(() => null);
+  if (state.sync.ingestJobId) {
+    await postJson(`${state.baseUrl}/jobs/${state.sync.ingestJobId}/cancel`, {}).catch(() => null);
+  }
+}
+
+async function sendMessage(event) {
+  event.preventDefault();
+  const query = setupFormValue(dom.composerInput.value);
+  if (!query) {
+    return;
+  }
+
+  let thread = currentThread();
+  if (!thread) {
+    thread = createThread();
+    state.threads.unshift(thread);
+    state.activeThreadId = thread.id;
+  }
+
+  thread.messages.push({
+    id: `msg-${nowEpochMsString()}-u`,
+    role: "user",
+    text: query,
+    timestamp: nowEpochMsString(),
+  });
+
+  const assistantMessage = {
+    id: `msg-${nowEpochMsString()}-a-pending`,
+    role: "assistant",
+    text: "Retrieving relevant notes...",
+    timestamp: nowEpochMsString(),
+    citations: null,
+    confidence: null,
+    pending: true,
+    pendingStage: "Retrieving",
+  };
+  thread.messages.push(assistantMessage);
+  thread.updatedAt = nowEpochMsString();
+  thread.title = deriveTitle(thread);
+
+  dom.composerInput.value = "";
+  dom.composerSend.disabled = true;
+  renderThreads();
+  renderTranscript();
+  void saveThreads();
+
+  let phaseTimer = null;
+  let slowTimer = null;
+  try {
+    phaseTimer = window.setTimeout(() => {
+      assistantMessage.pendingStage = "Thinking";
+      assistantMessage.text = "Thinking through your notes...";
+      renderTranscript();
+    }, 900);
+
+    slowTimer = window.setTimeout(() => {
+      assistantMessage.pendingStage = "Still working";
+      assistantMessage.text = "Running your local model. This can take longer on first response...";
+      renderTranscript();
+    }, 20000);
+
+    await ensureChatReady();
+    const response = await postJsonWithTimeout(`${state.baseUrl}/ask`, { query }, ASK_TIMEOUT_MS);
+    assistantMessage.id = `msg-${nowEpochMsString()}-a`;
+    assistantMessage.pending = false;
+    assistantMessage.pendingStage = "";
+    assistantMessage.text =
+      setupFormValue(response.answer) || "I could not generate an answer from your notes.";
+    assistantMessage.timestamp = nowEpochMsString();
+    assistantMessage.citations = Array.isArray(response.citations) ? response.citations : null;
+    assistantMessage.confidence =
+      typeof response.confidence === "number" ? response.confidence : null;
+  } catch (err) {
+    assistantMessage.id = `msg-${nowEpochMsString()}-a`;
+    assistantMessage.pending = false;
+    assistantMessage.pendingStage = "";
+    assistantMessage.text = `Request failed: ${formatError(err)}`;
+    assistantMessage.timestamp = nowEpochMsString();
+    assistantMessage.citations = null;
+    assistantMessage.confidence = null;
+  } finally {
+    if (phaseTimer) {
+      window.clearTimeout(phaseTimer);
+    }
+    if (slowTimer) {
+      window.clearTimeout(slowTimer);
+    }
+    thread.updatedAt = nowEpochMsString();
+    thread.title = deriveTitle(thread);
+    dom.composerSend.disabled = false;
+    renderThreads();
+    renderTranscript();
+    await saveThreads();
   }
 }
 
 function wireEvents() {
-  refreshHealthBtn?.addEventListener("click", fetchHealth);
-  refreshStatsBtn?.addEventListener("click", refreshStats);
+  dom.startInstallBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(2);
+  });
 
-  checkOllamaBtn?.addEventListener("click", checkOllamaStatus);
-  installOllamaBtn?.addEventListener("click", installOllama);
-  startOllamaBtn?.addEventListener("click", startOllama);
-  saveSetupBtn?.addEventListener("click", async () => {
-    try {
-      await saveSetupConfig(false);
-    } catch (err) {
-      setWizardMessage(`Failed to save setup config: ${err}`);
+  dom.learnMoreBtn.addEventListener("click", () => {
+    state.onboarding.learnExpanded = !state.onboarding.learnExpanded;
+    renderOnboarding();
+  });
+
+  dom.chooseFolderBtn.addEventListener("click", chooseFolder);
+  dom.exportNotesBtn.addEventListener("click", startExportFlow);
+  dom.backWelcomeBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(1);
+  });
+
+  dom.abortExportBtn.addEventListener("click", abortExportFlow);
+  dom.nextSetupBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(4);
+  });
+
+  dom.backExportBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(3);
+  });
+  dom.setupNowBtn.addEventListener("click", startLocalSetupFlow);
+  dom.completeSetupBtn.addEventListener("click", completeSetupFlow);
+
+  dom.syncNotesBtn.addEventListener("click", startSyncFlow);
+  dom.syncCancelBtn.addEventListener("click", cancelSyncFlow);
+
+  dom.newChatBtn.addEventListener("click", async () => {
+    const thread = createThread();
+    state.threads.unshift(thread);
+    state.threads = pruneThreads(state.threads);
+    state.activeThreadId = thread.id;
+    renderThreads();
+    renderTranscript();
+    await saveThreads();
+  });
+
+  dom.composer.addEventListener("submit", sendMessage);
+  dom.composerInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      dom.composer.requestSubmit();
     }
   });
-  pullModelsBtn?.addEventListener("click", pullSelectedModels);
-  retryFailedBtn?.addEventListener("click", retryFailedModels);
-  resumePullBtn?.addEventListener("click", resumeRemainingModels);
-
-  pickFolderBtn?.addEventListener("click", pickExportFolder);
-  validateFolderBtn?.addEventListener("click", validateExportFolder);
-  ingestFullBtn?.addEventListener("click", () => runIngest(true));
-  syncNowBtn?.addEventListener("click", () => runIngest(false));
-
-  runSearchBtn?.addEventListener("click", runSearch);
-  runAskBtn?.addEventListener("click", runAsk);
-
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      switchTab(tab.dataset.tabTarget);
-    });
-  });
 }
 
-async function start() {
-  baseUrl = await resolveBackendUrl();
-  healthUrl = `${baseUrl}/health`;
-  if (backendUrlText) {
-    backendUrlText.textContent = baseUrl;
+async function bootstrap() {
+  wireEvents();
+
+  state.baseUrl = await resolveBackendUrl();
+  await loadConfig();
+
+  if (requiresOnboarding(state.config)) {
+    state.onboarding.step = 1;
+    state.onboarding.learnExpanded = false;
+    showOnboardingShell();
+    renderOnboarding();
+    return;
   }
 
-  wireEvents();
-  await fetchHealth();
-  startHealthPolling();
-
-  await loadSetupConfig();
-  await checkOllamaStatus();
-  await refreshStats();
-  updateWizardButtons();
-  updateFolderActionButtons();
+  await loadThreads();
+  renderThreads();
+  renderTranscript();
+  renderSyncUi();
+  showMainShell();
 }
 
-start();
+bootstrap();
