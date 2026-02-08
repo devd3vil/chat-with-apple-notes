@@ -84,8 +84,8 @@ class RAGChain:
             # Step 4: Extract citations from answer
             extracted_citations = self._extract_citations(answer, citations)
             if citations and not extracted_citations:
-                answer = self._fallback_answer(citations)
-                extracted_citations = citations[: min(3, len(citations))]
+                answer = self._normalize_answer_without_citations(answer, citations)
+                extracted_citations = citations[:1]
             
             # Step 5: Calculate confidence
             confidence = self._calculate_confidence(answer, citations)
@@ -237,6 +237,22 @@ Answer:"""
             lines.append(f"[{idx}] {citation.text}")
         snippets = "\n".join(lines)
         return f"Most relevant snippets:\n{snippets}"
+
+    def _normalize_answer_without_citations(
+        self,
+        answer: str,
+        citations: list[Citation],
+    ) -> str:
+        """
+        Keep model answer text and attach a default citation when missing.
+
+        Falls back to extractive snippets only when the model produced no
+        answer text.
+        """
+        cleaned = (answer or "").strip()
+        if not cleaned:
+            return self._fallback_answer(citations)
+        return f"{cleaned} [1]"
 
 
 class Chunker:

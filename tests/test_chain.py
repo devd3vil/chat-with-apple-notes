@@ -225,8 +225,8 @@ class TestRAGChain:
         
         assert 0.0 <= result.confidence <= 1.0
 
-    def test_fallback_answer_when_llm_omits_citations(self):
-        """Fallback should surface snippets when LLM omits citations."""
+    def test_keeps_llm_answer_when_llm_omits_citations(self):
+        """Chain should preserve answer text and append a default citation."""
         embedder = FakeEmbedder(dimension=3)
         store = InMemoryStore()
         llm = FakeLLM()
@@ -249,6 +249,35 @@ class TestRAGChain:
         result = chain.ask("Estes Riverwalk is scenic.")
         
         assert result.citations
+        assert "Answer without citations." in result.answer
+        assert result.answer.strip().endswith("[1]")
+        assert "Most relevant snippets:" not in result.answer
+
+    def test_fallback_answer_used_when_llm_returns_empty_text(self):
+        """Fallback snippet answer is used only when model text is empty."""
+        embedder = FakeEmbedder(dimension=3)
+        store = InMemoryStore()
+        llm = FakeLLM()
+        llm.set_response("")
+
+        chunk = Chunk(
+            id="note1_0",
+            note_id="note1",
+            text="Estes Riverwalk is scenic.",
+            chunk_idx=0,
+            start_char=0,
+            end_char=27,
+            embedding=embedder.embed("Estes Riverwalk is scenic."),
+        )
+        store.add_chunks([chunk])
+
+        retriever = Retriever(store=store, embedder=embedder)
+        chain = RAGChain(retriever=retriever, llm=llm)
+
+        result = chain.ask("Estes Riverwalk is scenic.")
+
+        assert result.citations
+        assert result.answer.startswith("Most relevant snippets:")
         assert "[1]" in result.answer
 
     def test_ask_calls_retriever_and_llm_with_top_k(self):
