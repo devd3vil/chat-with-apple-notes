@@ -24,7 +24,10 @@ const APP_OWNED_EXPORT_SUBDIR: &str = "NotesLensExport";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 const DEFAULT_CHAT_MODEL: &str = "neural-chat";
 const DEFAULT_MODEL_PULL_TIMEOUT_SECS: u64 = 1800;
-const EXPORT_STALL_TIMEOUT_SECS: u64 = 60;
+const EXPORT_STALL_TIMEOUT_SECS: u64 = 180;
+const EXPORT_STARTUP_TIMEOUT_SECS: u64 = 300;
+const PREFLIGHT_MIN_RAM_GB: f64 = 8.0;
+const PREFLIGHT_MIN_DISK_GB: f64 = 12.0;
 
 struct BackendRuntime {
     child: Option<Child>,
@@ -670,6 +673,48 @@ fn now_timestamp_string() -> String {
         .to_string()
 }
 
+fn parse_macos_major(version: &str) -> Option<u32> {
+    let trimmed = version.trim();
+    let major = trimmed.split('.').next()?.trim().parse::<u32>().ok()?;
+    Some(major)
+}
+
+fn system_ram_gb() -> Option<f64> {
+    let (ok, raw) = run_command_capture("sysctl", &["-n", "hw.memsize"]).ok()?;
+    if !ok {
+        return None;
+    }
+    let bytes = raw.trim().parse::<f64>().ok()?;
+    Some(bytes / 1024.0 / 1024.0 / 1024.0)
+}
+
+fn free_disk_gb_for_path(path: &Path) -> Option<f64> {
+    let path_string = path.to_string_lossy().to_string();
+    let (ok, raw) = run_command_capture("df", &["-k", &path_string]).ok()?;
+    if !ok {
+        return None;
+    }
+    let line = raw
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty() && !line.starts_with("Filesystem"))?;
+    let columns: Vec<&str> = line.split_whitespace().collect();
+    if columns.len() < 4 {
+        return None;
+    }
+    let available_kb = columns[3].parse::<f64>().ok()?;
+    Some(available_kb / 1024.0 / 1024.0)
+}
+
+fn redacted_path(raw: &Path) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let as_string = raw.to_string_lossy().to_string();
+    if !home.is_empty() && as_string.starts_with(&home) {
+        return as_string.replacen(&home, "~", 1);
+    }
+    as_string
+}
+
 fn notes_export_script_path() -> PathBuf {
     find_backend_workdir()
         .join("scripts")
@@ -688,6 +733,7 @@ fn build_export_script_args(
     script_path: &Path,
     target_dir: &Path,
     mode: &str,
+    since_epoch_seconds: Option<u64>,
     max_files: Option<usize>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -695,6 +741,11 @@ fn build_export_script_args(
         target_dir.to_string_lossy().to_string(),
         mode.to_string(),
     ];
+    if mode == "delta" {
+        if let Some(since_epoch_seconds) = since_epoch_seconds.filter(|value| *value > 0) {
+            args.push(since_epoch_seconds.to_string());
+        }
+    }
     if let Some(limit) = max_files.filter(|value| *value > 0) {
         args.push(limit.to_string());
     }
@@ -723,8 +774,18 @@ fn update_snapshot_from_progress_line(
     snapshot: &mut ExportJobSnapshot,
     line: &str,
 ) -> Option<String> {
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(line) else {
-        return None;
+    let payload = if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+        value
+    } else {
+        // AppleScript/logging may prepend metadata before JSON payloads; recover
+        // by parsing the first balanced object-like segment.
+        let trimmed = line.trim();
+        let start = trimmed.find('{')?;
+        let end = trimmed.rfind('}')?;
+        if end <= start {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(&trimmed[start..=end]).ok()?
     };
 
     let Some(phase) = payload.get("phase").and_then(|value| value.as_str()) else {
@@ -976,6 +1037,7 @@ fn start_export_job(
     export_state: State<ExportJobState>,
     export_folder_path: String,
     mode: Option<String>,
+    since_epoch_seconds: Option<u64>,
     max_files: Option<usize>,
 ) -> Result<ExportJobSnapshot, String> {
     let mode = mode
@@ -1055,7 +1117,13 @@ fn start_export_job(
             return;
         }
 
-        let args = build_export_script_args(&script_path, &target_dir_for_thread, &mode, max_files);
+        let args = build_export_script_args(
+            &script_path,
+            &target_dir_for_thread,
+            &mode,
+            since_epoch_seconds,
+            max_files,
+        );
         let mut command = Command::new("osascript");
         command
             .args(args)
@@ -1108,6 +1176,8 @@ fn start_export_job(
         let mut last_fallback_scan = Instant::now();
         let mut last_progress_tick = Instant::now();
         let mut last_seen_current = 0usize;
+        let mut saw_structured_progress = false;
+        let started_at = Instant::now();
         loop {
             let mut saw_progress = false;
             while let Ok((is_stderr, line)) = line_receiver.try_recv() {
@@ -1117,17 +1187,16 @@ fn start_export_job(
                             continue;
                         }
 
-                        if is_stderr {
+                        let parsed_log = update_snapshot_from_progress_line(snapshot, &line);
+                        if let Some(entry) = parsed_log {
+                            snapshot.logs = push_log_line(&snapshot.logs, &entry, 10);
+                            saw_progress = true;
+                            saw_structured_progress = true;
+                        } else if is_stderr {
                             let prefixed = format!("stderr: {line}");
                             snapshot.logs = push_log_line(&snapshot.logs, &prefixed, 10);
                         } else {
-                            let parsed_log = update_snapshot_from_progress_line(snapshot, &line);
-                            if let Some(entry) = parsed_log {
-                                snapshot.logs = push_log_line(&snapshot.logs, &entry, 10);
-                                saw_progress = true;
-                            } else {
-                                snapshot.logs = push_log_line(&snapshot.logs, &line, 10);
-                            }
+                            snapshot.logs = push_log_line(&snapshot.logs, &line, 10);
                         }
                     }
                 }
@@ -1154,17 +1223,15 @@ fn start_export_job(
                                     continue;
                                 }
 
-                                if is_stderr {
+                                let parsed_log =
+                                    update_snapshot_from_progress_line(snapshot, &line);
+                                if let Some(entry) = parsed_log {
+                                    snapshot.logs = push_log_line(&snapshot.logs, &entry, 10);
+                                } else if is_stderr {
                                     let prefixed = format!("stderr: {line}");
                                     snapshot.logs = push_log_line(&snapshot.logs, &prefixed, 10);
                                 } else {
-                                    let parsed_log =
-                                        update_snapshot_from_progress_line(snapshot, &line);
-                                    if let Some(entry) = parsed_log {
-                                        snapshot.logs = push_log_line(&snapshot.logs, &entry, 10);
-                                    } else {
-                                        snapshot.logs = push_log_line(&snapshot.logs, &line, 10);
-                                    }
+                                    snapshot.logs = push_log_line(&snapshot.logs, &line, 10);
                                 }
                             }
                         }
@@ -1228,45 +1295,52 @@ fn start_export_job(
                 }
                 Ok(None) => {
                     if last_fallback_scan.elapsed() >= Duration::from_secs(1) {
-                        let files = collect_supported_files(&target_dir_for_thread);
-                        let count = files.len();
                         if let Ok(mut runtime_guard) = runtime.lock() {
                             if let Some(s) = runtime_guard.snapshot.as_mut() {
                                 if s.job_id == job_id_for_thread {
-                                    s.current = s.current.max(count);
-                                    if s.current > last_seen_current {
-                                        last_seen_current = s.current;
-                                        last_progress_tick = Instant::now();
-                                    }
-
-                                    for file_path in &files {
-                                        let label = format_export_log_label(
-                                            &target_dir_for_thread,
-                                            file_path,
-                                        );
-                                        if seen_files.insert(label.clone()) {
-                                            s.logs = push_log_line(&s.logs, &label, 10);
+                                    // In delta mode, avoid misleading progress from static file
+                                    // counts until script emits structured progress lines.
+                                    if mode != "delta" || saw_structured_progress {
+                                        let files = collect_supported_files(&target_dir_for_thread);
+                                        let count = files.len();
+                                        s.current = s.current.max(count);
+                                        if s.current > last_seen_current {
+                                            last_seen_current = s.current;
+                                            last_progress_tick = Instant::now();
                                         }
-                                    }
 
-                                    if let Some(total) = s.total {
-                                        s.message = if mode == "delta" {
-                                            format!(
-                                                "Syncing changes... {} of {} notes",
-                                                s.current, total
-                                            )
+                                        for file_path in &files {
+                                            let label = format_export_log_label(
+                                                &target_dir_for_thread,
+                                                file_path,
+                                            );
+                                            if seen_files.insert(label.clone()) {
+                                                s.logs = push_log_line(&s.logs, &label, 10);
+                                            }
+                                        }
+
+                                        if let Some(total) = s.total {
+                                            s.message = if mode == "delta" {
+                                                format!(
+                                                    "Syncing changes... {} of {} notes",
+                                                    s.current, total
+                                                )
+                                            } else {
+                                                format!(
+                                                    "Pulling notes... {} of {} files",
+                                                    s.current, total
+                                                )
+                                            };
                                         } else {
-                                            format!(
-                                                "Pulling notes... {} of {} files",
-                                                s.current, total
-                                            )
-                                        };
+                                            s.message = if mode == "delta" {
+                                                format!("Syncing changes... {} notes", s.current)
+                                            } else {
+                                                format!("Pulling notes... {} files", s.current)
+                                            };
+                                        }
                                     } else {
-                                        s.message = if mode == "delta" {
-                                            format!("Syncing changes... {} notes", s.current)
-                                        } else {
-                                            format!("Pulling notes... {} files", s.current)
-                                        };
+                                        s.message =
+                                            "Checking Apple Notes for changes...".to_string();
                                     }
                                 }
                             }
@@ -1274,9 +1348,14 @@ fn start_export_job(
                         last_fallback_scan = Instant::now();
                     }
 
-                    if last_progress_tick.elapsed()
-                        >= Duration::from_secs(EXPORT_STALL_TIMEOUT_SECS)
-                    {
+                    let stall_limit =
+                        if mode == "delta" && !saw_structured_progress && last_seen_current == 0 {
+                            Duration::from_secs(EXPORT_STARTUP_TIMEOUT_SECS)
+                        } else {
+                            Duration::from_secs(EXPORT_STALL_TIMEOUT_SECS)
+                        };
+
+                    if last_progress_tick.elapsed() >= stall_limit {
                         let _ = child.kill();
                         if let Ok(mut runtime_guard) = runtime.lock() {
                             runtime_guard.process_pid = None;
@@ -1309,12 +1388,36 @@ fn start_export_job(
                                     s.message = "Export stalled.".to_string();
                                     s.error = Some(format!(
                                         "No progress received for {} seconds.",
-                                        EXPORT_STALL_TIMEOUT_SECS
+                                        stall_limit.as_secs()
                                     ));
                                     s.logs = push_log_line(
                                         &s.logs,
                                         "Exporter stalled and was terminated.",
                                         10,
+                                    );
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    if mode == "delta"
+                        && !saw_structured_progress
+                        && started_at.elapsed()
+                            >= Duration::from_secs(
+                                EXPORT_STARTUP_TIMEOUT_SECS + EXPORT_STALL_TIMEOUT_SECS,
+                            )
+                    {
+                        let _ = child.kill();
+                        if let Ok(mut runtime_guard) = runtime.lock() {
+                            runtime_guard.process_pid = None;
+                            if let Some(s) = runtime_guard.snapshot.as_mut() {
+                                if s.job_id == job_id_for_thread {
+                                    s.finished_at = Some(now_timestamp_string());
+                                    s.status = "failed".to_string();
+                                    s.message = "Export stalled.".to_string();
+                                    s.error = Some(
+                                        "No structured progress received from exporter."
+                                            .to_string(),
                                     );
                                 }
                             }
@@ -1467,6 +1570,148 @@ fn validate_export_folder(path: String) -> ExportFolderStatus {
 }
 
 #[tauri::command]
+fn preflight_status() -> Result<serde_json::Value, String> {
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+
+    let os_version = run_command_capture("sw_vers", &["-productVersion"])
+        .ok()
+        .and_then(|(ok, out)| if ok { Some(out) } else { None })
+        .unwrap_or_else(|| "unknown".to_string());
+    let os_ok = parse_macos_major(&os_version)
+        .map(|major| major >= 13)
+        .unwrap_or(false);
+    checks.push(serde_json::json!({
+        "label": "macOS version",
+        "value": format!("{os_version} (requires 13+)"),
+        "ok": os_ok,
+    }));
+
+    let arch = std::env::consts::ARCH.to_string();
+    let arch_ok = arch == "aarch64" || arch == "x86_64";
+    checks.push(serde_json::json!({
+        "label": "Architecture",
+        "value": arch,
+        "ok": arch_ok,
+    }));
+
+    let ram_gb = system_ram_gb().unwrap_or(0.0);
+    let ram_ok = ram_gb >= PREFLIGHT_MIN_RAM_GB;
+    checks.push(serde_json::json!({
+        "label": "Memory",
+        "value": format!("{ram_gb:.1} GB (requires >= {PREFLIGHT_MIN_RAM_GB:.0} GB)"),
+        "ok": ram_ok,
+    }));
+
+    let home_path =
+        Path::new(&std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).to_path_buf();
+    let free_disk_gb = free_disk_gb_for_path(&home_path).unwrap_or(0.0);
+    let disk_ok = free_disk_gb >= PREFLIGHT_MIN_DISK_GB;
+    checks.push(serde_json::json!({
+        "label": "Free disk",
+        "value": format!("{free_disk_gb:.1} GB (requires >= {PREFLIGHT_MIN_DISK_GB:.0} GB)"),
+        "ok": disk_ok,
+    }));
+
+    let network_ok = ureq::get("https://ollama.com")
+        .timeout(Duration::from_secs(4))
+        .call()
+        .map(|resp| resp.status() >= 200 && resp.status() < 500)
+        .unwrap_or(false);
+    checks.push(serde_json::json!({
+        "label": "Network",
+        "value": if network_ok { "Online" } else { "Offline" },
+        "ok": network_ok,
+    }));
+
+    let passed = checks.iter().all(|check| {
+        check
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    });
+    let summary = if passed {
+        "All preflight checks passed.".to_string()
+    } else {
+        "Some checks failed. Resolve them before continuing.".to_string()
+    };
+
+    Ok(serde_json::json!({
+        "passed": passed,
+        "summary": summary,
+        "checks": checks,
+    }))
+}
+
+#[tauri::command]
+fn export_diagnostics_report(
+    app: tauri::AppHandle,
+    backend_state: State<BackendState>,
+) -> Result<String, String> {
+    let config_path = app_config_path(&app)?;
+    let chat_path = chat_threads_path(&app)?;
+    let app_config = read_app_config(&config_path).unwrap_or_default();
+    let port = {
+        let runtime_guard = backend_state
+            .runtime
+            .lock()
+            .map_err(|_| "Lock error".to_string())?;
+        runtime_guard.port
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let health = ureq::get(&format!("{base_url}/health"))
+        .timeout(Duration::from_secs(3))
+        .call()
+        .ok()
+        .and_then(|resp| resp.into_string().ok())
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .unwrap_or(serde_json::json!({"status":"unavailable"}));
+    let stats = ureq::get(&format!("{base_url}/stats"))
+        .timeout(Duration::from_secs(3))
+        .call()
+        .ok()
+        .and_then(|resp| resp.into_string().ok())
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .unwrap_or(serde_json::json!({"status":"unavailable"}));
+
+    let report = serde_json::json!({
+        "generated_at_epoch_sec": now_timestamp_string(),
+        "app": {
+            "name": "Apple Notes Lens",
+            "backend_url": base_url,
+        },
+        "config": {
+            "has_completed_onboarding": app_config.has_completed_onboarding,
+            "last_synced_at": app_config.last_synced_at,
+            "embed_model": app_config.embed_model,
+            "chat_model": app_config.chat_model,
+            "export_folder_path": app_config
+                .export_folder_path
+                .map(|p| redacted_path(Path::new(&p))),
+        },
+        "paths": {
+            "app_config": redacted_path(&config_path),
+            "chat_threads": redacted_path(&chat_path),
+        },
+        "health": health,
+        "stats": stats,
+    });
+
+    let diagnostics_dir = config_path
+        .parent()
+        .ok_or_else(|| "Unable to resolve diagnostics output directory".to_string())?
+        .join("diagnostics");
+    fs::create_dir_all(&diagnostics_dir)
+        .map_err(|err| format!("Failed to create diagnostics dir {diagnostics_dir:?}: {err}"))?;
+    let output_path = diagnostics_dir.join(format!("diagnostics-{}.json", now_timestamp_string()));
+    let raw = serde_json::to_string_pretty(&report)
+        .map_err(|err| format!("Failed to serialize diagnostics report: {err}"))?;
+    fs::write(&output_path, raw)
+        .map_err(|err| format!("Failed to write diagnostics report {output_path:?}: {err}"))?;
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn ollama_status() -> OllamaStatus {
     let version_output = run_command_capture("ollama", &["--version"]);
     let installed = version_output.is_ok();
@@ -1602,6 +1847,8 @@ fn main() {
             get_export_job,
             cancel_export_job,
             delete_export_subfolder,
+            preflight_status,
+            export_diagnostics_report,
             ollama_status,
             open_ollama_download_page,
             start_ollama,
@@ -1650,7 +1897,8 @@ mod tests {
     use super::{
         app_owned_export_subfolder, backend_env_from_config, build_export_script_args,
         classify_pull_failure, count_supported_files, is_supported_export_file,
-        normalize_app_config, parse_backend_port, parse_ollama_list_models, requires_onboarding,
+        normalize_app_config, parse_backend_port, parse_macos_major, parse_ollama_list_models,
+        requires_onboarding,
     };
     use serde_json::json;
     use std::fs;
@@ -1808,6 +2056,7 @@ mod tests {
             Path::new("/tmp/NotesLensExport"),
             "full",
             None,
+            None,
         );
         assert_eq!(args.len(), 3);
         assert_eq!(args[0], "/tmp/export_notes.applescript");
@@ -1821,11 +2070,34 @@ mod tests {
             Path::new("/tmp/export_notes.applescript"),
             Path::new("/tmp/NotesLensExport"),
             "delta",
+            None,
             Some(20),
         );
         assert_eq!(args.len(), 4);
         assert_eq!(args[2], "delta");
         assert_eq!(args[3], "20");
+    }
+
+    #[test]
+    fn build_export_script_args_includes_since_epoch_for_delta() {
+        let args = build_export_script_args(
+            Path::new("/tmp/export_notes.applescript"),
+            Path::new("/tmp/NotesLensExport"),
+            "delta",
+            Some(1_738_000_000),
+            None,
+        );
+        assert_eq!(args.len(), 4);
+        assert_eq!(args[2], "delta");
+        assert_eq!(args[3], "1738000000");
+    }
+
+    #[test]
+    fn parse_macos_major_extracts_major() {
+        assert_eq!(parse_macos_major("13.6.9"), Some(13));
+        assert_eq!(parse_macos_major("14"), Some(14));
+        assert_eq!(parse_macos_major(""), None);
+        assert_eq!(parse_macos_major("abc"), None);
     }
 
     #[test]

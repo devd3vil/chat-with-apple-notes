@@ -10,12 +10,16 @@ import json
 import hashlib
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from src.models import Note
 
 SYNC_STATE_SCHEMA_VERSION = 2
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class SyncState:
@@ -51,11 +55,14 @@ class SyncState:
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     file_schema_version = int(data.get("schema_version") or 1)
-                    self.last_sync_time = (
-                        datetime.fromisoformat(data["last_sync_time"])
-                        if data.get("last_sync_time")
-                        else None
-                    )
+                    raw_last_sync = data.get("last_sync_time")
+                    if raw_last_sync:
+                        parsed_last_sync = datetime.fromisoformat(raw_last_sync)
+                        if parsed_last_sync.tzinfo is None:
+                            parsed_last_sync = parsed_last_sync.replace(tzinfo=timezone.utc)
+                        self.last_sync_time = parsed_last_sync
+                    else:
+                        self.last_sync_time = None
                     raw_note_metadata = data.get("note_metadata", {})
                     self.note_metadata = self._normalize_note_metadata(
                         raw_note_metadata,
@@ -78,7 +85,7 @@ class SyncState:
         """Normalize old/new manifest data into current schema."""
         normalized: dict[str, dict] = {}
         indexed_at_fallback = (
-            self.last_sync_time.isoformat() if self.last_sync_time else datetime.now().isoformat()
+            self.last_sync_time.isoformat() if self.last_sync_time else _utcnow().isoformat()
         )
         for note_id, meta in raw_note_metadata.items():
             meta = meta or {}
@@ -151,7 +158,7 @@ class SyncState:
     ) -> None:
         """Update tracked manifest state for a note."""
         content_hash = _compute_hash(note.body)
-        indexed_at = datetime.now().isoformat()
+        indexed_at = _utcnow().isoformat()
         self.note_metadata[note.id] = {
             "source_id": note.id,
             "source_path": source_path,
@@ -178,7 +185,7 @@ class SyncState:
     
     def mark_sync_complete(self) -> None:
         """Mark sync as complete and save state."""
-        self.last_sync_time = datetime.now()
+        self.last_sync_time = _utcnow()
         self.save()
 
 

@@ -3,6 +3,7 @@ const APP_OWNED_EXPORT_SUBDIR = "NotesLensExport";
 const ONBOARDING_EXPORT_LIMIT = null;
 const ASK_TIMEOUT_MS = 180000;
 const SAVE_THREADS_TIMEOUT_MS = 5000;
+const RELATIVE_TIME_TICK_MS = 30000;
 const DRAWER_PREF_KEY = "noteslens.drawer_open";
 const DEFAULT_CONFIG = {
   hasCompletedOnboarding: false,
@@ -14,9 +15,10 @@ const DEFAULT_CONFIG = {
 
 const STEP_META = {
   1: { key: "welcome", title: "Welcome" },
-  2: { key: "folder", title: "Choose Export Folder" },
-  3: { key: "export", title: "Export Progress" },
-  4: { key: "setup", title: "Local AI Setup" },
+  2: { key: "preflight", title: "Preflight Checks" },
+  3: { key: "folder", title: "Choose Export Folder" },
+  4: { key: "export", title: "Export Progress" },
+  5: { key: "setup", title: "Local AI Setup" },
 };
 
 const dom = {
@@ -25,9 +27,10 @@ const dom = {
 
   stepLabel: document.getElementById("step-label"),
   stepTitle: document.getElementById("step-title"),
-  stepDots: [1, 2, 3, 4].map((idx) => document.getElementById(`step-dot-${idx}`)),
+  stepDots: [1, 2, 3, 4, 5].map((idx) => document.getElementById(`step-dot-${idx}`)),
   screens: {
     welcome: document.getElementById("screen-welcome"),
+    preflight: document.getElementById("screen-preflight"),
     folder: document.getElementById("screen-folder"),
     export: document.getElementById("screen-export"),
     setup: document.getElementById("screen-setup"),
@@ -36,6 +39,11 @@ const dom = {
   startInstallBtn: document.getElementById("start-install"),
   learnMoreBtn: document.getElementById("learn-more"),
   learnMoreCopy: document.getElementById("learn-more-copy"),
+  runPreflightBtn: document.getElementById("run-preflight"),
+  continueFolderBtn: document.getElementById("continue-folder"),
+  backFromPreflightBtn: document.getElementById("back-from-preflight"),
+  preflightList: document.getElementById("preflight-list"),
+  preflightSummary: document.getElementById("preflight-summary"),
 
   chooseFolderBtn: document.getElementById("choose-folder"),
   folderPath: document.getElementById("folder-path"),
@@ -62,6 +70,12 @@ const dom = {
   onboardingError: document.getElementById("onboarding-error"),
 
   syncNotesBtn: document.getElementById("sync-notes"),
+  actionsMenu: document.getElementById("actions-menu"),
+  actionRebuildIndexBtn: document.getElementById("action-rebuild-index"),
+  actionClearIndexBtn: document.getElementById("action-clear-index"),
+  actionResetAppDataBtn: document.getElementById("action-reset-app-data"),
+  actionExportDiagnosticsBtn: document.getElementById("action-export-diagnostics"),
+  mainNotice: document.getElementById("main-notice"),
   lastSynced: document.getElementById("last-synced"),
   syncDot: document.getElementById("sync-dot"),
   syncBanner: document.getElementById("sync-banner"),
@@ -76,6 +90,7 @@ const dom = {
   newChatBtn: document.getElementById("new-chat"),
   threadList: document.getElementById("thread-list"),
   transcript: document.getElementById("transcript"),
+  activityLogLines: document.getElementById("activity-log-lines"),
   composer: document.getElementById("composer"),
   composerInput: document.getElementById("composer-input"),
   composerSend: document.getElementById("composer-send"),
@@ -88,6 +103,12 @@ const state = {
     step: 1,
     learnExpanded: false,
     error: "",
+    preflight: {
+      busy: false,
+      passed: false,
+      summary: "",
+      checks: [],
+    },
     export: {
       status: "idle",
       current: 0,
@@ -114,9 +135,14 @@ const state = {
     exportJobId: null,
     ingestJobId: null,
     cancelRequested: false,
+    startedAt: null,
+    failedAt: null,
   },
   ui: {
     drawerOpen: true,
+    relativeTimeTickerId: null,
+    activityLog: [],
+    mainNotice: "",
   },
 };
 
@@ -144,12 +170,42 @@ function nowEpochMsString() {
   return String(Date.now());
 }
 
+function parseTimestampMs(raw) {
+  const value = setupFormValue(raw);
+  if (!value) {
+    return Number.NaN;
+  }
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    // Accept both seconds and milliseconds epoch values.
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  // Prefer native parsing first so naive ISO strings are interpreted in local time.
+  const parsedNative = Date.parse(value);
+  if (Number.isFinite(parsedNative)) {
+    return parsedNative;
+  }
+
+  // Fallback for environments that require an explicit timezone suffix.
+  const hasTimezone = /[zZ]$|[+-]\d{2}:\d{2}$/.test(value);
+  if (hasTimezone) {
+    return Number.NaN;
+  }
+  const parsedUtc = Date.parse(`${value}Z`);
+  return Number.isFinite(parsedUtc) ? parsedUtc : Number.NaN;
+}
+
 function toISO(value) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) {
+  if (!value) {
     return new Date().toISOString();
   }
-  return date.toISOString();
+  const parsedMs = parseTimestampMs(value);
+  if (!Number.isFinite(parsedMs)) {
+    return new Date().toISOString();
+  }
+  return new Date(parsedMs).toISOString();
 }
 
 function normalizeConfig(payload) {
@@ -197,8 +253,7 @@ function formatRelativeTime(raw) {
   if (!raw) {
     return "never";
   }
-  const numeric = Number(raw);
-  const ms = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(raw);
+  const ms = parseTimestampMs(raw);
   if (!Number.isFinite(ms)) {
     return "never";
   }
@@ -304,8 +359,32 @@ function setOnboardingError(message = "") {
 }
 
 function goToStep(step) {
-  state.onboarding.step = Math.max(1, Math.min(4, step));
+  state.onboarding.step = Math.max(1, Math.min(5, step));
   renderOnboarding();
+}
+
+function addActivity(message) {
+  const text = setupFormValue(message);
+  if (!text) {
+    return;
+  }
+  const stamp = new Date().toLocaleTimeString();
+  state.ui.activityLog.push(`[${stamp}] ${text}`);
+  if (state.ui.activityLog.length > 40) {
+    state.ui.activityLog = state.ui.activityLog.slice(-40);
+  }
+  if (dom.activityLogLines) {
+    dom.activityLogLines.textContent = state.ui.activityLog.slice(-15).join("\n");
+  }
+}
+
+function setMainNotice(message = "") {
+  state.ui.mainNotice = setupFormValue(message);
+  if (!dom.mainNotice) {
+    return;
+  }
+  dom.mainNotice.hidden = !state.ui.mainNotice;
+  dom.mainNotice.textContent = state.ui.mainNotice;
 }
 
 function showOnboardingShell() {
@@ -370,7 +449,7 @@ function setDrawerOpen(nextOpen, persist = true) {
 
 function renderStepHeader() {
   const stepMeta = STEP_META[state.onboarding.step];
-  dom.stepLabel.textContent = `Step ${state.onboarding.step} of 4`;
+  dom.stepLabel.textContent = `Step ${state.onboarding.step} of 5`;
   dom.stepTitle.textContent = stepMeta.title;
 
   dom.stepDots.forEach((dot, idx) => {
@@ -392,6 +471,33 @@ function renderOnboardingScreens() {
   dom.learnMoreCopy.hidden = !state.onboarding.learnExpanded;
 
   dom.folderPath.textContent = setupFormValue(state.config.exportFolderPath) || "Not selected";
+
+  const preflight = state.onboarding.preflight;
+  if (dom.preflightList) {
+    dom.preflightList.innerHTML = "";
+    if (preflight.checks.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "Click Run Checks to validate this Mac.";
+      dom.preflightList.appendChild(li);
+    } else {
+      preflight.checks.forEach((check) => {
+        const li = document.createElement("li");
+        li.className = check.ok ? "ok" : "fail";
+        li.textContent = `${check.label}: ${check.value}`;
+        dom.preflightList.appendChild(li);
+      });
+    }
+  }
+  if (dom.preflightSummary) {
+    dom.preflightSummary.textContent = preflight.summary || "Run checks to continue.";
+  }
+  if (dom.runPreflightBtn) {
+    dom.runPreflightBtn.disabled = preflight.busy;
+    dom.runPreflightBtn.textContent = preflight.busy ? "Running..." : "Run Checks";
+  }
+  if (dom.continueFolderBtn) {
+    dom.continueFolderBtn.disabled = !preflight.passed || preflight.busy;
+  }
 
   const exportState = state.onboarding.export;
   const exportCompleted = exportState.status === "completed";
@@ -473,12 +579,30 @@ function renderSyncUi() {
     dom.syncBannerMessage.textContent = state.sync.message || "Sync in progress...";
     dom.syncBannerBar.style.width = `${Math.max(4, Math.min(100, state.sync.progress))}%`;
     dom.syncCancelBtn.hidden = false;
-    dom.lastSynced.textContent = `Last synced: ${formatRelativeTime(state.config.lastSyncedAt)}`;
+    dom.lastSynced.textContent = `Sync started: ${formatRelativeTime(state.sync.startedAt)}`;
   } else {
     dom.syncCancelBtn.hidden = true;
     dom.syncBannerBar.style.width = "0%";
-    dom.lastSynced.textContent = `Last synced: ${formatRelativeTime(state.config.lastSyncedAt)}`;
+    if (state.sync.failedAt) {
+      dom.lastSynced.textContent = `Last sync failed: ${formatRelativeTime(state.sync.failedAt)}`;
+    } else {
+      dom.lastSynced.textContent = `Last synced: ${formatRelativeTime(state.config.lastSyncedAt)}`;
+    }
   }
+}
+
+function startRelativeTimeTicker() {
+  if (state.ui.relativeTimeTickerId) {
+    return;
+  }
+  state.ui.relativeTimeTickerId = window.setInterval(() => {
+    if (dom.mainShell.hidden) {
+      return;
+    }
+    renderSyncUi();
+    renderThreads();
+    renderTranscript();
+  }, RELATIVE_TIME_TICK_MS);
 }
 
 function normalizeThread(raw) {
@@ -841,6 +965,60 @@ async function chooseFolder() {
   }
 }
 
+async function runPreflightChecks() {
+  state.onboarding.preflight.busy = true;
+  state.onboarding.preflight.summary = "Running checks...";
+  setOnboardingError("");
+  renderOnboarding();
+
+  try {
+    const invoke = tauriInvoke();
+    let checksPayload = null;
+    if (typeof invoke === "function") {
+      checksPayload = await invoke("preflight_status");
+    }
+
+    const checks = Array.isArray(checksPayload?.checks)
+      ? checksPayload.checks.map((item) => ({
+          label: setupFormValue(item.label) || "Check",
+          value: setupFormValue(item.value) || (item.ok ? "OK" : "Failed"),
+          ok: Boolean(item.ok),
+        }))
+      : [];
+
+    if (checks.length === 0) {
+      const online = navigator.onLine !== false;
+      state.onboarding.preflight.checks = [
+        { label: "Network", value: online ? "Online" : "Offline", ok: online },
+      ];
+      state.onboarding.preflight.passed = online;
+      state.onboarding.preflight.summary = online
+        ? "Basic checks passed."
+        : "Network is offline. Connect and retry.";
+    } else {
+      state.onboarding.preflight.checks = checks;
+      state.onboarding.preflight.passed = checks.every((item) => item.ok);
+      state.onboarding.preflight.summary = setupFormValue(checksPayload?.summary)
+        || (state.onboarding.preflight.passed
+          ? "All checks passed."
+          : "Some checks failed. Resolve them and retry.");
+    }
+
+    if (!state.onboarding.preflight.passed) {
+      setOnboardingError("Preflight checks failed. Fix the highlighted items and retry.");
+    } else {
+      addActivity("Preflight checks passed.");
+    }
+  } catch (err) {
+    state.onboarding.preflight.passed = false;
+    state.onboarding.preflight.summary = "Preflight checks failed to run.";
+    setOnboardingError(formatError(err, "Preflight checks failed."));
+  } finally {
+    state.onboarding.preflight.busy = false;
+    renderOnboarding();
+  }
+}
+
 async function pollExportJob() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
@@ -887,7 +1065,7 @@ async function startExportFlow() {
   }
 
   setOnboardingError("");
-  goToStep(3);
+  goToStep(4);
   state.onboarding.export = {
     status: "queued",
     current: 0,
@@ -922,7 +1100,7 @@ async function startExportFlow() {
       state.onboarding.export.message = "Export finished successfully.";
       renderOnboarding();
       await delay(300);
-      goToStep(4);
+      goToStep(5);
       return;
     }
 
@@ -941,7 +1119,7 @@ async function startExportFlow() {
       logs: [],
       jobId: null,
     };
-    goToStep(2);
+    goToStep(3);
     setOnboardingError(formatError(err, "Export failed. Please try again."));
   }
 }
@@ -985,7 +1163,7 @@ async function abortExportFlow() {
     logs: [],
     jobId: null,
   };
-  goToStep(2);
+  goToStep(3);
   setOnboardingError("Export aborted. You can choose a folder and try again.");
 }
 
@@ -1120,12 +1298,12 @@ async function startLocalSetupFlow() {
   const folderPath = setupFormValue(state.config.exportFolderPath);
   if (!folderPath) {
     setOnboardingError("Choose an export folder before setup.");
-    goToStep(2);
+    goToStep(3);
     return;
   }
   if (state.onboarding.export.status !== "completed") {
     setOnboardingError("Complete note export first.");
-    goToStep(3);
+    goToStep(4);
     return;
   }
 
@@ -1253,7 +1431,11 @@ async function startSyncFlow() {
   state.sync.busy = true;
   state.sync.cancelRequested = false;
   state.sync.progress = 4;
-  state.sync.message = "Exporting latest notes...";
+  state.sync.message = "Checking Apple Notes for changes...";
+  state.sync.startedAt = nowEpochMsString();
+  state.sync.failedAt = null;
+  setMainNotice("");
+  addActivity("Started notes sync.");
   renderSyncUi();
 
   const invoke = tauriInvoke();
@@ -1265,9 +1447,16 @@ async function startSyncFlow() {
   }
 
   try {
+    const parsedLastSyncedMs = parseTimestampMs(state.config.lastSyncedAt);
+    const sinceEpochSeconds =
+      Number.isFinite(parsedLastSyncedMs) && parsedLastSyncedMs > 0
+        ? Math.floor(parsedLastSyncedMs / 1000)
+        : null;
+
     const exportStart = await invoke("start_export_job", {
       exportFolderPath: folderPath,
       mode: "delta",
+      sinceEpochSeconds,
     });
     state.sync.exportJobId = exportStart?.job_id || null;
 
@@ -1310,6 +1499,7 @@ async function startSyncFlow() {
       reindex: false,
     });
     state.sync.ingestJobId = ingestStart.job_id;
+    let completedIngestSnapshot = null;
 
     while (true) {
       if (state.sync.cancelRequested) {
@@ -1328,9 +1518,14 @@ async function startSyncFlow() {
       renderSyncUi();
 
       if (snapshot.status === "completed") {
+        completedIngestSnapshot = snapshot;
         state.sync.progress = 100;
         renderSyncUi();
-        await saveConfig({ lastSyncedAt: toISO(snapshot?.result?.last_sync_time) });
+        const syncTimestamp = toISO(
+          completedIngestSnapshot?.result?.last_sync_time || new Date().toISOString(),
+        );
+        await saveConfig({ lastSyncedAt: syncTimestamp });
+        state.sync.failedAt = null;
         break;
       }
       if (snapshot.status === "cancelled") {
@@ -1344,10 +1539,15 @@ async function startSyncFlow() {
     }
 
     state.sync.message = "Sync complete.";
+    setMainNotice("");
+    addActivity("Notes sync completed.");
     renderSyncUi();
     await delay(500);
   } catch (err) {
     state.sync.message = formatError(err, "Sync failed.");
+    state.sync.failedAt = nowEpochMsString();
+    addActivity(`Notes sync failed: ${state.sync.message}`);
+    setMainNotice(`Sync failed: ${state.sync.message}`);
     renderSyncUi();
   } finally {
     state.sync.busy = false;
@@ -1355,6 +1555,7 @@ async function startSyncFlow() {
     state.sync.exportJobId = null;
     state.sync.ingestJobId = null;
     state.sync.cancelRequested = false;
+    state.sync.startedAt = null;
     renderSyncUi();
   }
 }
@@ -1372,6 +1573,178 @@ async function cancelSyncFlow() {
   await invoke("cancel_export_job").catch(() => null);
   if (state.sync.ingestJobId) {
     await postJson(`${state.baseUrl}/jobs/${state.sync.ingestJobId}/cancel`, {}).catch(() => null);
+  }
+}
+
+async function runMaintenanceRebuildIndex() {
+  if (state.sync.busy) {
+    return;
+  }
+  const folderPath = setupFormValue(state.config.exportFolderPath);
+  if (!folderPath) {
+    setMainNotice("No export folder configured.");
+    return;
+  }
+  const confirmed = window.confirm("Rebuild local index now? This can take a few minutes.");
+  if (!confirmed) {
+    return;
+  }
+
+  setMainNotice("");
+  state.sync.busy = true;
+  state.sync.progress = 5;
+  state.sync.message = "Rebuilding local index...";
+  state.sync.startedAt = nowEpochMsString();
+  state.sync.failedAt = null;
+  renderSyncUi();
+  addActivity("Started full index rebuild.");
+
+  try {
+    const started = await postJson(`${state.baseUrl}/jobs/ingest`, {
+      export_dir: appOwnedExportPath(folderPath),
+      mode: "full",
+      reindex: true,
+    });
+    state.sync.ingestJobId = started.job_id;
+    while (true) {
+      const snapshot = await getJson(`${state.baseUrl}/jobs/${started.job_id}`);
+      state.sync.message = setupFormValue(snapshot.message) || "Rebuilding local index...";
+      if (typeof snapshot.total === "number" && snapshot.total > 0) {
+        const ratio = Math.max(0, Math.min(1, Number(snapshot.current || 0) / snapshot.total));
+        state.sync.progress = Math.max(5, Math.round(ratio * 100));
+      } else {
+        state.sync.progress = Math.min(96, state.sync.progress + 1);
+      }
+      renderSyncUi();
+      if (snapshot.status === "completed") {
+        const syncTimestamp = toISO(snapshot?.result?.last_sync_time || new Date().toISOString());
+        await saveConfig({ lastSyncedAt: syncTimestamp });
+        state.sync.progress = 100;
+        state.sync.message = "Index rebuild complete.";
+        addActivity("Full index rebuild completed.");
+        break;
+      }
+      if (snapshot.status === "failed") {
+        throw new Error(setupFormValue(snapshot.error) || "Index rebuild failed.");
+      }
+      if (snapshot.status === "cancelled") {
+        throw new WorkflowCancelled("Index rebuild cancelled.");
+      }
+      await delay(600);
+    }
+  } catch (err) {
+    setMainNotice(`Rebuild failed: ${formatError(err)}`);
+    state.sync.failedAt = nowEpochMsString();
+    addActivity(`Rebuild failed: ${formatError(err)}`);
+  } finally {
+    state.sync.busy = false;
+    state.sync.exportJobId = null;
+    state.sync.ingestJobId = null;
+    state.sync.cancelRequested = false;
+    state.sync.startedAt = null;
+    state.sync.progress = 0;
+    renderSyncUi();
+  }
+}
+
+async function runMaintenanceClearIndex() {
+  if (state.sync.busy) {
+    return;
+  }
+  const confirmed = window.confirm("Clear local index and sync metadata? You can rebuild afterward.");
+  if (!confirmed) {
+    return;
+  }
+  setMainNotice("");
+  addActivity("Clearing local index...");
+  try {
+    await postJson(`${state.baseUrl}/reset_notes_index`, {});
+    await saveConfig({ lastSyncedAt: null, hasCompletedOnboarding: false });
+    state.onboarding.export.status = "idle";
+    setMainNotice("Local index cleared. Run setup or sync to rebuild.");
+    addActivity("Local index cleared.");
+  } catch (err) {
+    setMainNotice(`Clear index failed: ${formatError(err)}`);
+    addActivity(`Clear index failed: ${formatError(err)}`);
+  }
+  renderSyncUi();
+}
+
+async function runMaintenanceResetAppData() {
+  if (state.sync.busy) {
+    return;
+  }
+  const confirmed = window.confirm(
+    "Reset app data? This clears local index, chat history, and onboarding state.",
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  setMainNotice("");
+  addActivity("Resetting app data...");
+  const invoke = tauriInvoke();
+
+  try {
+    await postJson(`${state.baseUrl}/reset_notes_index`, {}).catch(() => null);
+    const folder = setupFormValue(state.config.exportFolderPath);
+    if (folder && typeof invoke === "function") {
+      await invoke("delete_export_subfolder", { exportFolderPath: folder }).catch(() => null);
+    }
+
+    state.threads = [createThread()];
+    state.activeThreadId = state.threads[0].id;
+    await saveThreads();
+
+    await saveConfig({
+      hasCompletedOnboarding: false,
+      exportFolderPath: null,
+      lastSyncedAt: null,
+      embedModel: state.config.embedModel || DEFAULT_CONFIG.embedModel,
+      chatModel: state.config.chatModel || DEFAULT_CONFIG.chatModel,
+    });
+
+    state.onboarding.step = 1;
+    state.onboarding.preflight = { busy: false, passed: false, summary: "", checks: [] };
+    state.onboarding.export = {
+      status: "idle",
+      current: 0,
+      total: null,
+      message: "",
+      logs: [],
+      jobId: null,
+    };
+    state.onboarding.setup = {
+      busy: false,
+      readyToComplete: false,
+      progress: 0,
+      stage: "Installing Ollama...",
+      message: "Preparing local setup...",
+      ingestJobId: null,
+    };
+    showOnboardingShell();
+    renderOnboarding();
+    setMainNotice("App data reset. Complete onboarding to continue.");
+    addActivity("App data reset completed.");
+  } catch (err) {
+    setMainNotice(`Reset failed: ${formatError(err)}`);
+    addActivity(`Reset failed: ${formatError(err)}`);
+  }
+}
+
+async function exportDiagnosticsBundle() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    setMainNotice("Diagnostics export requires desktop shell.");
+    return;
+  }
+  try {
+    const path = await invoke("export_diagnostics_report");
+    setMainNotice(`Diagnostics exported: ${path}`);
+    addActivity(`Diagnostics exported: ${path}`);
+  } catch (err) {
+    setMainNotice(`Diagnostics export failed: ${formatError(err)}`);
+    addActivity(`Diagnostics export failed: ${formatError(err)}`);
   }
 }
 
@@ -1438,6 +1811,8 @@ async function sendMessage(event) {
     assistantMessage.pendingStage = "";
     assistantMessage.text =
       setupFormValue(response.answer) || "I could not generate an answer from your notes.";
+    setMainNotice("");
+    addActivity("Answered chat question.");
     assistantMessage.timestamp = nowEpochMsString();
     assistantMessage.citations = Array.isArray(response.citations) ? response.citations : null;
     assistantMessage.confidence =
@@ -1446,7 +1821,10 @@ async function sendMessage(event) {
     assistantMessage.id = `msg-${nowEpochMsString()}-a`;
     assistantMessage.pending = false;
     assistantMessage.pendingStage = "";
-    assistantMessage.text = `Request failed: ${formatError(err)}`;
+    const failure = formatError(err);
+    assistantMessage.text = `Request failed: ${failure}`;
+    setMainNotice(`Chat request failed: ${failure}`);
+    addActivity(`Chat request failed: ${failure}`);
     assistantMessage.timestamp = nowEpochMsString();
     assistantMessage.citations = null;
     assistantMessage.confidence = null;
@@ -1470,6 +1848,7 @@ function wireEvents() {
   dom.startInstallBtn.addEventListener("click", () => {
     setOnboardingError("");
     goToStep(2);
+    void runPreflightChecks();
   });
 
   dom.learnMoreBtn.addEventListener("click", () => {
@@ -1477,28 +1856,62 @@ function wireEvents() {
     renderOnboarding();
   });
 
+  dom.runPreflightBtn.addEventListener("click", runPreflightChecks);
+  dom.continueFolderBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(3);
+  });
+  dom.backFromPreflightBtn.addEventListener("click", () => {
+    setOnboardingError("");
+    goToStep(1);
+  });
+
   dom.chooseFolderBtn.addEventListener("click", chooseFolder);
   dom.exportNotesBtn.addEventListener("click", startExportFlow);
   dom.backWelcomeBtn.addEventListener("click", () => {
     setOnboardingError("");
-    goToStep(1);
+    goToStep(2);
   });
 
   dom.abortExportBtn.addEventListener("click", abortExportFlow);
   dom.nextSetupBtn.addEventListener("click", () => {
     setOnboardingError("");
-    goToStep(4);
+    goToStep(5);
   });
 
   dom.backExportBtn.addEventListener("click", () => {
     setOnboardingError("");
-    goToStep(3);
+    goToStep(4);
   });
   dom.setupNowBtn.addEventListener("click", startLocalSetupFlow);
   dom.completeSetupBtn.addEventListener("click", completeSetupFlow);
 
   dom.syncNotesBtn.addEventListener("click", startSyncFlow);
   dom.syncCancelBtn.addEventListener("click", cancelSyncFlow);
+  dom.actionRebuildIndexBtn.addEventListener("click", async () => {
+    if (dom.actionsMenu) {
+      dom.actionsMenu.open = false;
+    }
+    await runMaintenanceRebuildIndex();
+  });
+  dom.actionClearIndexBtn.addEventListener("click", async () => {
+    if (dom.actionsMenu) {
+      dom.actionsMenu.open = false;
+    }
+    await runMaintenanceClearIndex();
+  });
+  dom.actionResetAppDataBtn.addEventListener("click", async () => {
+    if (dom.actionsMenu) {
+      dom.actionsMenu.open = false;
+    }
+    await runMaintenanceResetAppData();
+  });
+  dom.actionExportDiagnosticsBtn.addEventListener("click", async () => {
+    if (dom.actionsMenu) {
+      dom.actionsMenu.open = false;
+    }
+    await exportDiagnosticsBundle();
+  });
   dom.drawerToggleBtn.addEventListener("click", () => {
     setDrawerOpen(!state.ui.drawerOpen);
   });
@@ -1525,6 +1938,11 @@ function wireEvents() {
 async function bootstrap() {
   wireEvents();
   loadDrawerPreference();
+  startRelativeTimeTicker();
+  if (dom.activityLogLines) {
+    dom.activityLogLines.textContent = "";
+  }
+  setMainNotice("");
 
   state.baseUrl = await resolveBackendUrl();
   await loadConfig();

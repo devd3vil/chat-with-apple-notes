@@ -412,7 +412,7 @@ Return:
 
 - [x] Choose app shell (Tauri)
 - [x] Add service manager (spawn backend, port mgmt, health checks)
-- [ ] Add preflight screen (OS/arch/disk/network checks)
+- [x] Add preflight screen (OS/arch/disk/network checks)
 - [x] Add setup wizard screens
 - [x] Add Ollama detection + guided install UX
 - [x] Add model pull UI + progress
@@ -421,9 +421,9 @@ Return:
 - [x] Add folder picker + permissions
 - [x] Add explicit permission denial/retry UX
 - [x] Add main tabs: Search / Ask / Sync / Health
-- [ ] Add logging + error surfaces
-- [ ] Add diagnostics export action (redacted)
-- [ ] Add storage management actions (rebuild/clear/reset)
+- [x] Add logging + error surfaces
+- [x] Add diagnostics export action (redacted)
+- [x] Add storage management actions (rebuild/clear/reset)
 - [ ] Add auto-update (optional)
 
 ### Backend

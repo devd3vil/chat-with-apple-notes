@@ -149,7 +149,7 @@ body {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -263,6 +263,29 @@ code {
   border-radius: 14px;
   background: var(--surface-soft);
   padding: 12px;
+}
+
+.preflight-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.preflight-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.preflight-list li.ok {
+  color: #1d8f4e;
+}
+
+.preflight-list li.fail {
+  color: var(--danger);
 }
 
 .privacy-card p {
@@ -426,6 +449,52 @@ pre {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.actions-menu {
+  position: relative;
+}
+
+.actions-menu > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 10px 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.actions-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.actions-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 180px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-strong);
+  padding: 10px;
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+
+.main-notice {
+  margin: 8px 14px 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(211, 80, 76, 0.4);
+  border-radius: 12px;
+  background: rgba(211, 80, 76, 0.1);
+  color: var(--danger);
+  font-size: 13px;
 }
 
 .sync-dot {
@@ -628,6 +697,20 @@ pre {
   overflow: auto;
   display: grid;
   gap: 10px;
+}
+
+.activity-panel {
+  margin: 0 16px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  padding: 8px 12px;
+}
+
+.activity-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
 }
 
 .empty {
