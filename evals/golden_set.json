@@ -1,0 +1,52 @@
+[
+  {
+    "note_id": "n6",
+    "query": "What should we do around sunset in Estes Park on Tuesday?",
+    "reference_answer": "Walk the Estes Riverwalk to Lake Estes Marina during golden hour (about 7:40-8:20 pm)."
+  },
+  {
+    "note_id": "n6",
+    "query": "Where is dinner suggested on Tuesday night in Estes Park?",
+    "reference_answer": "Cafe de Pho Thai or Nepal's Cafe."
+  },
+  {
+    "note_id": "n6",
+    "query": "Which RMNP lake loop is recommended at sunrise?",
+    "reference_answer": "Sprague Lake (0.5 mile loop), flat and photogenic."
+  },
+  {
+    "note_id": "n6",
+    "query": "What attraction is suggested in Canon City?",
+    "reference_answer": "Royal Gorge Bridge and Park walk-about."
+  },
+  {
+    "note_id": "n6",
+    "query": "What are the Wednesday night dinner options in Colorado Springs?",
+    "reference_answer": "NaRai Thai or Dos Santos tacos."
+  },
+  {
+    "note_id": "n6",
+    "query": "What are the Thursday afternoon options in Colorado Springs?",
+    "reference_answer": "Pikes Peak Summit (cog railway or drive) or Broadmoor Seven Falls."
+  },
+  {
+    "note_id": "n6",
+    "query": "What is the Georgetown Loop Railroad schedule?",
+    "reference_answer": "Pick up tickets at 11:45 am for a 12:30 pm ride; the ride lasts about 1 hour 15 minutes."
+  },
+  {
+    "note_id": "n6",
+    "query": "What is suggested for Vail Saturday morning?",
+    "reference_answer": "Ride Eagle Bahn to Eagle's Nest and walk the Fireweed Trail, or drive to Frisco for the Rainbow Lake trail."
+  },
+  {
+    "note_id": "n6",
+    "query": "What time should you depart Vail on Sunday and why?",
+    "reference_answer": "Depart around 12:30 pm to allow for the 2-hour drive plus Sunday I-70 traffic and return the rental by 3:00 pm."
+  },
+  {
+    "note_id": "n6",
+    "query": "What are the altitude tips?",
+    "reference_answer": "Estes is about 7,522 ft and Vail about 8,150 ft; hydrate and avoid heavy booze the first 24 hours."
+  }
+]

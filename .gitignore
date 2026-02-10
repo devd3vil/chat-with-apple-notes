@@ -1,0 +1,34 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Data and exported notes (user-specific)
+data/
+notes_export/
+*.html
+
+# Chroma vector database (user-specific)
+chroma_db/
+
+# Rust desktop app build artifacts
+desktop/src-tauri/target/
