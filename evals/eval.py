@@ -66,7 +66,7 @@ def _recall_at_k(expected: set[str], retrieved: list[str], k: int) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate recall@k for retrieval.")
     parser.add_argument("--dataset", default="evals/dataset.json")
-    parser.add_argument("--notes", default="evals/fixture_notes.json")
+    parser.add_argument("--notes", default="evals/dataset.json")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--chunk-overlap", type=int, default=50)

@@ -38,7 +38,7 @@ class KeywordEmbedder(Embedder):
     """Deterministic lexical embedder for stable integration tests."""
 
     _TOKENS = (
-        "bonomala",
+        "anika",
         "aurora",
         "saturn",
         "december",
@@ -146,11 +146,11 @@ def test_ui_chat_flow_returns_renderable_citations(tmp_path: Path) -> None:
         "20241201",
         "Project Saturn",
         "p1",
-        "bonomala saturn december goals",
+        "anika saturn december goals",
     )
     _write_note(export_dir, "20241202", "Misc", "p2", "meeting aurora")
 
-    llm = FakeLLM("Bonomala is linked to Project Saturn [1]")
+    llm = FakeLLM("Anika is linked to Project Saturn [1]")
     client = _make_ui_client(tmp_path, llm=llm)
 
     started = client.post("/jobs/ingest", json={"export_dir": str(export_dir), "mode": "full"})
@@ -160,7 +160,7 @@ def test_ui_chat_flow_returns_renderable_citations(tmp_path: Path) -> None:
     _assert_job_payload_shape(terminal)
     assert terminal["status"] == "completed"
 
-    response = client.post("/ask", json={"query": "who is bonomala saturn"})
+    response = client.post("/ask", json={"query": "who is anika saturn"})
     assert response.status_code == 200
     payload = response.json()
 
@@ -171,7 +171,7 @@ def test_ui_chat_flow_returns_renderable_citations(tmp_path: Path) -> None:
     first = payload["citations"][0]
     assert isinstance(first["chunk_id"], str) and first["chunk_id"]
     assert first["note_id"] == "p1"
-    assert isinstance(first["text"], str) and "bonomala" in first["text"].lower()
+    assert isinstance(first["text"], str) and "anika" in first["text"].lower()
     assert isinstance(first["score"], float)
     assert first["source"]["note_id"] == "p1"
 
@@ -194,7 +194,7 @@ def test_ui_delta_sync_flow_updates_indexed_content(tmp_path: Path) -> None:
     note_path = export_dir / "20241201 Project Saturn [p1].html"
     note_path.write_text("<html><body>aurora saturn december goals</body></html>", encoding="utf-8")
 
-    llm = FakeLLM("Updated owner is Bonomala [1]")
+    llm = FakeLLM("Updated owner is Anika [1]")
     client = _make_ui_client(tmp_path, llm=llm)
 
     full_started = client.post("/jobs/ingest", json={"export_dir": str(export_dir), "mode": "full"})
@@ -203,7 +203,7 @@ def test_ui_delta_sync_flow_updates_indexed_content(tmp_path: Path) -> None:
     assert full_terminal["status"] == "completed"
 
     note_path.write_text(
-        "<html><body>bonomala saturn december goals</body></html>",
+        "<html><body>anika saturn december goals</body></html>",
         encoding="utf-8",
     )
     delta_started = client.post(
@@ -217,11 +217,11 @@ def test_ui_delta_sync_flow_updates_indexed_content(tmp_path: Path) -> None:
     assert delta_terminal["result"]["mode"] == "delta"
     assert delta_terminal["result"]["delta_summary"]["updated_notes"] == 1
 
-    ask = client.post("/ask", json={"query": "bonomala saturn"})
+    ask = client.post("/ask", json={"query": "anika saturn"})
     assert ask.status_code == 200
     citations = ask.json()["citations"]
     assert citations
-    assert "bonomala" in citations[0]["text"].lower()
+    assert "anika" in citations[0]["text"].lower()
 
     stats = client.get("/stats")
     assert stats.status_code == 200
@@ -231,7 +231,7 @@ def test_ui_delta_sync_flow_updates_indexed_content(tmp_path: Path) -> None:
 def test_ui_ingest_cancel_contract(tmp_path: Path) -> None:
     export_dir = tmp_path / "export"
     export_dir.mkdir()
-    body = "bonomala saturn december goals " * 40
+    body = "anika saturn december goals " * 40
     for idx in range(1, 36):
         _write_note(export_dir, f"202412{idx:02d}", f"Note {idx}", f"p{idx}", body)
 

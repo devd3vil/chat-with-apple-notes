@@ -153,7 +153,7 @@ def _format_snippets(citations: list) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM judge evaluation.")
-    parser.add_argument("--notes", default="evals/fixture_notes.json")
+    parser.add_argument("--notes", default="evals/dataset.json")
     parser.add_argument("--golden", default="evals/golden_set.json")
     parser.add_argument("--use-ollama", action="store_true")
     parser.add_argument("--ollama-base-url", default=None)

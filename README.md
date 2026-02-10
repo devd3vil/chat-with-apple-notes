@@ -13,15 +13,73 @@ A local-first Q&A application for your Apple Notes using Retrieval Augmented Gen
 
 ## Requirements
 
-- **Python**: 3.12+
-- **macOS**: For Apple Notes integration (export via AppleScript)
-- **Ollama**: For local LLM inference
-  - Download: https://ollama.ai
-  - Required models:
-    - `nomic-embed-text` (embeddings)
-    - `neural-chat` (chat/generation)
+- **macOS** (Apple Notes export uses AppleScript)
+- Internet connection for first-time tool/model installs
+- Admin/sudo access may be needed for Homebrew/Xcode CLT install
 
-## Quick Start
+## Run The Desktop App (Fresh Mac, Recommended)
+
+If you have nothing installed, use the bootstrap script. It will check/install:
+
+- Xcode Command Line Tools
+- Homebrew
+- Python 3.12 + `.venv` dependencies
+- Rust toolchain + Tauri CLI v1
+- Ollama + required models (`nomic-embed-text`, `neural-chat`)
+
+Then it launches the desktop app.
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/devd3vil/chat-with-apple-notes.git
+cd chat-with-apple-notes
+```
+
+### 2. Run one command
+
+```bash
+./scripts/bootstrap_and_run_macos.sh
+```
+
+Notes:
+
+- First run can take a while (toolchain + model downloads).
+- If Xcode Command Line Tools prompts, finish that installer, then re-run the same command.
+- On first launch, the in-app onboarding will guide export/index setup.
+
+### Optional flags
+
+```bash
+# Use custom Ollama models
+EMBED_MODEL=nomic-embed-text CHAT_MODEL=neural-chat ./scripts/bootstrap_and_run_macos.sh
+
+# Skip model pull (if already installed)
+SKIP_MODEL_PULL=1 ./scripts/bootstrap_and_run_macos.sh
+```
+
+## Manual Run (Advanced)
+
+Use this only if you want to manage dependencies yourself.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -e ".[dev]"
+
+ollama serve
+ollama pull nomic-embed-text
+ollama pull neural-chat
+
+cargo install tauri-cli --version "^1.5" --locked
+cd desktop/src-tauri
+BACKEND_CMD="$PWD/../../.venv/bin/python" cargo tauri dev
+```
+
+## Backend/API Quick Start (Without Desktop)
+
+If you only want the desktop app, use `./scripts/bootstrap_and_run_macos.sh` above and skip this section.
 
 ### 1. Setup Environment
 
@@ -42,8 +100,8 @@ cp .env.example .env
 
 # Edit .env if needed (defaults work for local Ollama)
 # OLLAMA_BASE_URL=http://localhost:11434
-# OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
-# OLLAMA_CHAT_MODEL=llama3.1:8b
+# OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# OLLAMA_CHAT_MODEL=neural-chat
 ```
 
 ### 3. Start Ollama
@@ -53,8 +111,8 @@ cp .env.example .env
 ollama serve
 
 # Pull models (in another terminal)
-ollama pull mxbai-embed-large
-ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+ollama pull neural-chat
 ```
 
 ### Environment Variables
@@ -181,7 +239,7 @@ print(f"Confidence: {result.confidence}")
 │   └── api.py                      # FastAPI endpoints
 ├── evals/
 │   ├── dataset.json                # Eval dataset
-│   ├── fixture_notes.json          # Fixture corpus
+│   ├── dataset.json                # Fixture corpus
 │   └── eval.py                     # Recall@k evaluation
 ├── main.py                         # FastAPI entrypoint
 ├── tests/
